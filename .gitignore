@@ -1,0 +1,58 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+.venv
+pip-log.txt
+pip-delete-this-directory.txt
+.pytest_cache/
+.coverage
+htmlcov/
+*.egg-info/
+dist/
+build/
+
+# VS Code
+.vscode/launch.json
+.vscode/*.log
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Logs
+logs/*.log
+*.log
+
+# TouchDesigner
+*.backup*.toe
+*.backup*.tox
+Backup/
+crash/
+
+# Media files (large assets)
+*.mp4
+*.mov
+*.avi
+*.wav
+*.mp3
+*.aif
+*.aiff
+
+# OS
+Thumbs.db
+desktop.ini
+
+# Temporary files
+*.tmp
+*.temp
+*.swp
+*.swo
+*~

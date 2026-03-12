@@ -1,0 +1,375 @@
+"""
+Movement Tracker - MediaPipe Pose to OSC
+Tracks multiple people's body movements and sends to TouchDesigner
+"""
+
+import cv2
+import mediapipe as mp
+from pythonosc import udp_client
+import numpy as np
+import time
+import json
+from typing import Dict, Optional, List
+
+class MovementTracker:
+    def __init__(self, 
+                 osc_ip: str = "127.0.0.1", 
+                 osc_port: int = 7000,
+                 config_path: str = "configs/movement_mappings.json",
+                 max_people: int = 4):
+        """
+        Initialize movement tracker with multi-person support
+        
+        Args:
+            osc_ip: IP address for OSC messages (TouchDesigner)
+            osc_port: Port for OSC messages
+            config_path: Path to movement mappings config
+            max_people: Maximum number of people to track (1-4)
+        """
+        # MediaPipe setup - using Holistic for better multi-person detection
+        self.mp_pose = mp.solutions.pose
+        self.mp_drawing = mp.solutions.drawing_utils
+        self.mp_holistic = mp.solutions.holistic
+        
+        # Create separate pose detectors for each person
+        self.max_people = min(max_people, 4)  # Limit to 4 for performance
+        self.pose_detectors = []
+        for i in range(self.max_people):
+            detector = self.mp_pose.Pose(
+                static_image_mode=False,
+                min_detection_confidence=0.5,
+                min_tracking_confidence=0.5,
+                model_complexity=1
+            )
+            self.pose_detectors.append(detector)
+        
+        # OSC client to send to TouchDesigner
+        self.osc_client = udp_client.SimpleUDPClient(osc_ip, osc_port)
+        
+        # Webcam
+        self.cap = cv2.VideoCapture(0)
+        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+        self.cap.set(cv2.CAP_PROP_FPS, 30)
+        
+        # Movement tracking state for each person
+        self.prev_positions: List[Dict[str, float]] = [{} for _ in range(self.max_people)]
+        self.motion_energy: List[float] = [0.0 for _ in range(self.max_people)]
+        self.tracking_active: List[bool] = [False for _ in range(self.max_people)]
+        self.person_boxes: List[Optional[tuple]] = [None for _ in range(self.max_people)]
+        
+        # Load configuration
+        self.config = self._load_config(config_path)
+        
+        # Performance monitoring
+        self.frame_times = []
+        self.fps = 0
+        
+    def _load_config(self, path: str) -> dict:
+        """Load movement mappings configuration"""
+        try:
+            with open(path, 'r') as f:
+                return json.load(f)
+        except FileNotFoundError:
+            print(f"Warning: Config file {path} not found, using defaults")
+            return {}
+    
+    
+    def detect_people_regions(self, frame):
+        """
+        Detect multiple people in frame and return bounding regions
+        Uses simple person detection based on pose landmarks
+        """
+        # For initial implementation, we'll divide the frame into regions
+        # and process each region separately
+        height, width = frame.shape[:2]
+        
+        regions = []
+        if self.max_people == 1:
+            regions = [(0, 0, width, height)]
+        elif self.max_people == 2:
+            # Split frame vertically
+            mid = width // 2
+            regions = [
+                (0, 0, mid + 100, height),
+                (mid - 100, 0, width, height)
+            ]
+        elif self.max_people == 3:
+            third = width // 3
+            regions = [
+                (0, 0, third + 50, height),
+                (third - 50, 0, 2*third + 50, height),
+                (2*third - 50, 0, width, height)
+            ]
+        elif self.max_people >= 4:
+            # 2x2 grid
+            mid_w = width // 2
+            mid_h = height // 2
+            regions = [
+                (0, 0, mid_w + 100, mid_h + 100),
+                (mid_w - 100, 0, width, mid_h + 100),
+                (0, mid_h - 100, mid_w + 100, height),
+                (mid_w - 100, mid_h - 100, width, height)
+            ]
+        
+        return regions
+    
+    def calculate_metrics(self, landmarks, person_id: int = 0) -> Dict[str, float]:
+        """
+        Extract meaningful movement metrics from pose landmarks
+        
+        Args:
+            landmarks: MediaPipe pose landmarks
+            person_id: ID of the person being tracked
+            
+        Returns:
+            Dictionary of movement metrics
+        """
+        # Key landmarks (MediaPipe indices)
+        left_wrist = landmarks[15]
+        right_wrist = landmarks[16]
+        left_shoulder = landmarks[11]
+        right_shoulder = landmarks[12]
+        nose = landmarks[0]
+        left_hip = landmarks[23]
+        right_hip = landmarks[24]
+        
+        metrics = {
+            # Hand positions (normalized 0-1, origin top-left)
+            'left_hand_x': left_wrist.x,
+            'left_hand_y': left_wrist.y,
+            'right_hand_x': right_wrist.x,
+            'right_hand_y': right_wrist.y,
+            
+            # Hand height (relative to shoulders, negative = above)
+            'left_hand_height': left_shoulder.y - left_wrist.y,
+            'right_hand_height': right_shoulder.y - right_wrist.y,
+            
+            # Hand spread (horizontal distance)
+            'hand_spread': abs(right_wrist.x - left_wrist.x),
+            
+            # Body center vertical (0=top, 1=bottom)
+            'body_height': (left_hip.y + right_hip.y) / 2,
+            
+            # Head position
+            'head_x': nose.x,
+            'head_y': nose.y,
+            
+            # Shoulder tilt (positive = right side lower)
+            'shoulder_tilt': left_shoulder.y - right_shoulder.y,
+        }
+        
+        # Calculate motion energy (velocity-based)
+        if self.prev_positions[person_id]:
+            motion = 0.0
+            tracked_points = ['left_hand_x', 'left_hand_y', 
+                            'right_hand_x', 'right_hand_y']
+            
+            for key in tracked_points:
+                if key in self.prev_positions[person_id]:
+                    delta = abs(metrics[key] - self.prev_positions[person_id][key])
+                    motion += delta
+            
+            # Scale and smooth
+            self.motion_energy[person_id] = motion * 100  # Scale up for visibility
+        
+        metrics['motion_energy'] = self.motion_energy[person_id]
+        
+        # Store for next frame
+        self.prev_positions[person_id] = metrics.copy()
+        
+        return metrics
+    
+    def send_osc_messages(self, metrics: Dict[str, float], person_id: int = 0):
+        """Send all metrics via OSC to TouchDesigner for a specific person"""
+        try:
+            for key, value in metrics.items():
+                # Use person_id in OSC address: /movement/person1/left_hand_x
+                address = f"/movement/person{person_id + 1}/{key}"
+                self.osc_client.send_message(address, float(value))
+            
+            # Send tracking status for this person
+            self.osc_client.send_message(f"/movement/person{person_id + 1}/tracking_active", 1.0)
+            
+        except Exception as e:
+            print(f"OSC send error for person {person_id}: {e}")
+    
+    def send_tracking_lost(self, person_id: int = 0):
+        """Send tracking lost signal for a specific person"""
+        try:
+            self.osc_client.send_message(f"/movement/person{person_id + 1}/tracking_active", 0.0)
+        except Exception as e:
+            print(f"OSC send error: {e}")
+    
+    def send_global_stats(self, num_people: int):
+        """Send overall tracking statistics"""
+        try:
+            self.osc_client.send_message("/movement/num_people", float(num_people))
+            
+            # Send average motion energy across all people
+            active_energies = [e for i, e in enumerate(self.motion_energy) if self.tracking_active[i]]
+            if active_energies:
+                avg_energy = sum(active_energies) / len(active_energies)
+                self.osc_client.send_message("/movement/avg_energy", float(avg_energy))
+        except Exception as e:
+            print(f"OSC send error: {e}")
+    
+    def calculate_fps(self, frame_time: float):
+        """Calculate rolling average FPS"""
+        self.frame_times.append(frame_time)
+        if len(self.frame_times) > 30:
+            self.frame_times.pop(0)
+        
+        if self.frame_times:
+            avg_time = sum(self.frame_times) / len(self.frame_times)
+            self.fps = 1.0 / avg_time if avg_time > 0 else 0
+    
+    def draw_overlay(self, frame, landmarks, metrics: Dict[str, float], person_id: int = 0):
+        """Draw tracking visualization on frame for a specific person"""
+        # Color per person
+        colors = [
+            (0, 255, 0),    # Green - Person 1
+            (255, 0, 0),    # Blue - Person 2
+            (0, 255, 255),  # Yellow - Person 3
+            (255, 0, 255)   # Magenta - Person 4
+        ]
+        color = colors[person_id % len(colors)]
+        
+        # Draw pose landmarks
+        self.mp_drawing.draw_landmarks(
+            frame,
+            landmarks,
+            self.mp_pose.POSE_CONNECTIONS,
+            self.mp_drawing.DrawingSpec(color=color, thickness=2),
+            self.mp_drawing.DrawingSpec(color=color, thickness=2)
+        )
+        
+        # Draw person ID label near head
+        if landmarks:
+            nose = landmarks.landmark[0]
+            h, w, _ = frame.shape
+            text_x = int(nose.x * w)
+            text_y = int(nose.y * h) - 20
+            cv2.putText(frame, f"P{person_id + 1}", (text_x, text_y),
+                       cv2.FONT_HERSHEY_SIMPLEX, 1.0, color, 3)
+        
+        return frame
+    
+    def run(self, show_preview: bool = True):
+        """
+        Main tracking loop with multi-person support
+        
+        Args:
+            show_preview: Whether to display visualization window
+        """
+        print("Movement Tracker started (Multi-Person Mode)...")
+        print(f"Tracking up to {self.max_people} people")
+        print(f"Sending OSC to {self.osc_client._address}:{self.osc_client._port}")
+        print("Press ESC to quit")
+        
+        try:
+            while self.cap.isOpened():
+                frame_start = time.time()
+                
+                success, frame = self.cap.read()
+                if not success:
+                    print("Failed to read frame")
+                    continue
+                
+                # Flip frame horizontally for mirror view
+                frame = cv2.flip(frame, 1)
+                
+                # Convert to RGB for MediaPipe
+                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                
+                # Get regions for multi-person detection
+                regions = self.detect_people_regions(frame)
+                
+                # Track people in each region
+                num_people_tracked = 0
+                for person_id in range(min(self.max_people, len(regions))):
+                    x1, y1, x2, y2 = regions[person_id]
+                    
+                    # Ensure bounds are valid
+                    x1, y1 = max(0, x1), max(0, y1)
+                    x2 = min(frame.shape[1], x2)
+                    y2 = min(frame.shape[0], y2)
+                    
+                    # Extract region
+                    region = frame_rgb[y1:y2, x1:x2]
+                    
+                    if region.size == 0:
+                        continue
+                    
+                    # Process region with person-specific detector
+                    results = self.pose_detectors[person_id].process(region)
+                    
+                    if results.pose_landmarks:
+                        # Extract and send metrics for this person
+                        landmarks = results.pose_landmarks.landmark
+                        
+                        # Adjust landmark coordinates to full frame
+                        region_width = x2 - x1
+                        region_height = y2 - y1
+                        for landmark in landmarks:
+                            landmark.x = (landmark.x * region_width + x1) / frame.shape[1]
+                            landmark.y = (landmark.y * region_height + y1) / frame.shape[0]
+                        
+                        metrics = self.calculate_metrics(landmarks, person_id)
+                        self.send_osc_messages(metrics, person_id)
+                        
+                        self.tracking_active[person_id] = True
+                        num_people_tracked += 1
+                        
+                        # Draw visualization
+                        if show_preview:
+                            frame = self.draw_overlay(frame, results.pose_landmarks, metrics, person_id)
+                    else:
+                        # Tracking lost for this person
+                        if self.tracking_active[person_id]:
+                            self.send_tracking_lost(person_id)
+                            self.tracking_active[person_id] = False
+                
+                # Send global statistics
+                self.send_global_stats(num_people_tracked)
+                
+                # Calculate FPS
+                frame_time = time.time() - frame_start
+                self.calculate_fps(frame_time)
+                
+                # Draw global info overlay
+                if show_preview:
+                    y_offset = 30
+                    info_lines = [
+                        f"FPS: {self.fps:.1f}",
+                        f"People Tracked: {num_people_tracked}/{self.max_people}",
+                        f"Mode: Multi-Person"
+                    ]
+                    
+                    for i, line in enumerate(info_lines):
+                        cv2.putText(frame, line, (10, y_offset + i * 30),
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+                    
+                    cv2.imshow('Movement Tracking (Multi-Person)', frame)
+                    if cv2.waitKey(5) & 0xFF == 27:  # ESC key
+                        break
+                
+        except KeyboardInterrupt:
+            print("\nStopping tracker...")
+        finally:
+            self.cleanup()
+    
+    def cleanup(self):
+        """Clean up resources"""
+        self.cap.release()
+        cv2.destroyAllWindows()
+        for detector in self.pose_detectors:
+            detector.close()
+        print("Movement tracker stopped")
+
+
+if __name__ == "__main__":
+    # Run tracker with preview window
+    # max_people: 1-4 (default 2 for typical DJ setup with guest)
+    tracker = MovementTracker(max_people=2)
+    tracker.run(show_preview=True)
