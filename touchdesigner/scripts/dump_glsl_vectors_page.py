@@ -63,7 +63,10 @@ def _dump_one(path):
         # Dump the full contents of any page that looks uniform-related.
         for pg, plist in pages.items():
             low = pg.lower()
-            if not any(k in low for k in ("vector", "uniform", "value", "array")):
+            if not any(
+                k in low
+                for k in ("vector", "uniform", "value", "array", "glsl", "const")
+            ):
                 continue
             _p("  --- FULL DUMP of page '%s' ---" % pg)
             for par in plist:
@@ -108,10 +111,12 @@ def _dump_one(path):
     # value{i}x/y/z/w directly. Probe 1..16 to discover the true max slot count
     # and reveal EXACTLY which uniformname slots are empty (the 2/4/5/6/7/9
     # mystery). getattr(..., None) safely returns None for absent components.
-    _p("  --- slot 1..16: uniformname + value{i}[x,y,z,w] ---")
-    max_slot = 0
-    for i in range(1, 17):
-        nm = getattr(g.par, "uniformname" + str(i), None)
+    # NOTE: par names are 0-INDEXED on this build — uniname{i} / value{i}x..w
+    # (probe v2 proved the Vectors page uses 'uniname0', not 'uniformname1').
+    _p("  --- slot 0..15: uniname{i} + value{i}[x,y,z,w] ---")
+    max_slot = -1
+    for i in range(0, 16):
+        nm = getattr(g.par, "uniname" + str(i), None)
         comps = [
             getattr(g.par, "value%d%s" % (i, c), None) for c in ("x", "y", "z", "w")
         ]
@@ -131,10 +136,7 @@ def _dump_one(path):
                     vals.append("%g" % c.eval())
                 except Exception as e:
                     vals.append("err:%s" % e)
-        _p(
-            "    slot %2d: uniformname=%-18s value=[%s]"
-            % (i, nm_state, ", ".join(vals))
-        )
+        _p("    slot %2d: uniname=%-18s value=[%s]" % (i, nm_state, ", ".join(vals)))
     _p("    >>> highest existing slot on %s = %d" % (g.name, max_slot))
 
 
