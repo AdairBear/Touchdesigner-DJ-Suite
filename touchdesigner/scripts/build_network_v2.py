@@ -120,57 +120,79 @@ def _text_dat_from_file(name, file_path, x, y):
     return dat
 
 
-def _ensure_glsl_uniform_slots(glsl, n):
-    """Grow a GLSL TOP's uniform parameter sequence so uniformname1..n /
-    value1..n all exist. A stock GLSL TOP ships with only ~6 slots; the
-    pipeline needs 10. The sequence name varies by TD version, so we
-    self-discover the sequence that owns the uniformname/value block and
-    grow it, with a fallback to a numeric count par. Logs what it did.
-    """
-    # Already big enough?
-    if getattr(glsl.par, "uniformname" + str(n), None) is not None:
-        return True
-    grown = False
+def _glsl_uniform_diag(glsl):
+    """Dump the GLSL TOP's real uniform-related par names + sequence groups so
+    we can confirm the exact API on this TD build (2022.35320) instead of
+    guessing. Printed only when a grow is actually needed."""
     try:
-        for seq in glsl.seq:
+        names = sorted({p.name for p in glsl.pars("uniformname*", "value*", "const*")})
+        _log(
+            "  [diag] %s uniform-ish pars: %s" % (glsl.name, names if names else "NONE")
+        )
+    except Exception as e:
+        _log("  [diag] %s par-list err: %s" % (glsl.name, str(e)))
+    try:
+        groups = []
+        for sg in glsl.seq:
             try:
-                block_pars = [p.name for p in seq[0].pars]
+                groups.append("%s(numBlocks=%s)" % (sg.name, sg.numBlocks))
             except Exception:
-                continue
-            owns_uniform = any("uniformname" in pn for pn in block_pars) or (
-                "value" in block_pars
-            )
-            if not owns_uniform:
-                continue
+                groups.append(str(sg))
+        _log("  [diag] %s seq groups: %s" % (glsl.name, groups if groups else "NONE"))
+    except Exception as e:
+        _log("  [diag] %s seq-list err: %s" % (glsl.name, str(e)))
+
+
+def _ensure_glsl_uniform_slots(glsl, n):
+    """Grow a GLSL TOP's uniform sequence so uniformname1..n / value1..n exist.
+    A stock GLSL TOP ships ~6 slots; the pipeline needs 10. We don't assume the
+    sequence's name or block-par names (they vary by TD version): instead we
+    test-grow each sequence group and KEEP the one whose growth makes
+    `uniformname{n}` materialize, reverting the rest. Falls back to a numeric
+    count par. Logs the real names via [diag] so a failure is actionable.
+    """
+    target = "uniformname" + str(n)
+    if getattr(glsl.par, target, None) is not None:
+        return True
+    _glsl_uniform_diag(glsl)
+    grown = False
+    # Test-grow-and-verify each sequence group.
+    try:
+        for sg in glsl.seq:
             try:
-                if seq.numBlocks < n:
-                    seq.numBlocks = n
-                grown = True
-                _log(
-                    "  grew GLSL uniform seq '%s' -> %d blocks"
-                    % (seq.name, seq.numBlocks)
-                )
+                before = sg.numBlocks
+                if before >= n:
+                    continue
+                sg.numBlocks = n
+                if getattr(glsl.par, target, None) is not None:
+                    grown = True
+                    _log(
+                        "  grew GLSL uniform seq '%s' -> %d blocks"
+                        % (sg.name, sg.numBlocks)
+                    )
+                    break
+                sg.numBlocks = before  # wrong group — revert
             except Exception as e:
-                _log("  seq '%s' grow err: %s" % (seq.name, str(e)))
+                _log("  seq grow attempt err on %s: %s" % (glsl.name, str(e)))
     except Exception as e:
         _log("  uniform-seq discovery err: " + str(e))
-    # Fallback: some TD versions gate the count behind a single par.
-    if getattr(glsl.par, "uniformname" + str(n), None) is None:
-        for cnt in ("numuniforms", "numconstants", "uniforms"):
+    # Fallback: some TD versions gate the count behind a single numeric par.
+    if getattr(glsl.par, target, None) is None:
+        for cnt in ("numuniforms", "numconstants", "uniforms", "numvecuniforms"):
             par = getattr(glsl.par, cnt, None)
             if par is not None:
                 try:
                     par.val = n
-                    grown = True
                     _log("  set GLSL count par '%s' = %d" % (cnt, n))
                 except Exception as e:
                     _log("  count par '%s' set err: %s" % (cnt, str(e)))
                 break
-    if getattr(glsl.par, "uniformname" + str(n), None) is None:
+    if getattr(glsl.par, target, None) is None:
         _log(
-            "  WARN could not grow %s uniform slots to %d — set manually"
-            % (glsl.name, n)
+            "  WARN %s: uniform slots still < %d after grow attempts — "
+            "see [diag] above for the real par/seq names" % (glsl.name, n)
         )
+        return False
     return grown
 
 
@@ -324,14 +346,21 @@ def build():
     except Exception:
         pass
 
-    final_composite = _make(compositeTOP, "final_composite", 1050, 175)
+    # final_composite is a single-source PASSTHROUGH (Null TOP). bloom_post
+    # already produced the finished look (switched shader + glow via
+    # Composite "add", 2 inputs). A Composite TOP needs >=2 inputs for ANY
+    # operation, so a 1-input Composite here threw "Not enough sources
+    # specified" and starved syphonOut1. A Null passes bloom_post straight
+    # through at its OUT_W x OUT_H resolution.
+    #   NOTE: the canonical aura_compositor docstring describes compositing the
+    #   aura OVER a live `camera_in`. We deliberately DON'T add a camera here:
+    #   OBS already owns the webcam source, and a second camera in TD would
+    #   double-image (see diagnose_obs_double_image.py). The Syphon output is
+    #   the aura/outline look only; OBS layers it over its own camera. If you
+    #   ever want TD to do the over-camera composite, replace this Null with a
+    #   Composite TOP (operand="over") wired [bloom_post, camera_in].
+    final_composite = _make(nullTOP, "final_composite", 1050, 175)
     final_composite.setInputs([bloom_post])
-    try:
-        final_composite.par.outputresolution = "custom"
-        final_composite.par.resolutionw = OUT_W
-        final_composite.par.resolutionh = OUT_H
-    except Exception:
-        pass
 
     # ----------------------------------------------------------------
     # 8. SYPHON OUT — single sender OBS connects to. Exactly ONE Syphon Out
