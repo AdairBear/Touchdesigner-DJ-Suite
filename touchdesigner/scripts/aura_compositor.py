@@ -422,18 +422,20 @@ def _bootstrap_audio_chain_once():
                         return nm
             return None
 
-        # Ordered preference (2026-04-26 fix):
-        #   1. BlackHole 2ch — Serato routes through "DJ + Analysis" multi-output
-        #      which sends to Studio 1824c AND BlackHole 2ch. BlackHole is the
-        #      virtual loopback that TD should listen to.
-        #   2. Pioneer DDJ-SX2 — USB audio interface (lower priority: Serato
-        #      may not route its mix here in all configurations)
-        #   3. PreSonus 1824c — physical inputs (only if a cable is patched)
-        #   4. Built-in mic — last-resort fallback
+        # Ordered preference (2026-06-05 fix — supersedes 2026-04-26):
+        #   1. PreSonus Studio 1824c — Serato master is physically patched into
+        #      1824c inputs 1-2 (OBS already captures it there). This is the
+        #      proven live signal path. Match on '1824' substring.
+        #   2. Pioneer DDJ-SX2 — USB audio interface (some Serato configs route
+        #      the master mix here directly).
+        #   3. BlackHole 2ch — virtual loopback fallback (only carries signal if
+        #      an app deliberately targets the "DJ + Analysis" multi-output; in
+        #      Thomas's setup it is silent, so it is now a last-resort fallback).
+        #   4. Built-in mic — last-resort fallback.
         chosen = (
-            _find("blackhole", "loopback audio", "sound siphon")
+            _find("1824c", "1824", "studio 1824", "presonus")
             or _find("ddj-sx2", "ddj sx2", "pioneer ddj", "ddj")
-            or _find("1824c", "1824", "studio 1824", "presonus")
+            or _find("blackhole", "loopback audio", "sound siphon")
             or _find(
                 "built-in microphone", "internal microphone", "macbook", "built-in"
             )
