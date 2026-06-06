@@ -29,6 +29,14 @@ MASK_W, MASK_H = 640, 480  # Resolution of the segmentation mask
 HEADER_SIZE = 4  # 4 bytes frame counter (uint32)
 TOTAL_SIZE = HEADER_SIZE + MASK_W * MASK_H
 
+# --- Visual mode (flame / lightning) ---
+# Maps the human-readable mode name to the integer index TD's Switch TOP uses.
+# Broadcast on OSC so TouchDesigner can swap the body-outline shader live.
+# See configs/visual_mode.json and docs/setup/visual_mode_toggle.md.
+VISUAL_MODE_CONFIG = "configs/visual_mode.json"
+MODE_INDEX = {"flame": 0, "lightning": 1}
+DEFAULT_VISUAL_MODE = "flame"
+
 
 class MovementTracker:
     def __init__(
@@ -40,6 +48,7 @@ class MovementTracker:
         camera_id: int = 0,
         enable_segmentation: bool = True,
         mask_path: str = MASK_PATH,
+        visual_mode_config_path: str = VISUAL_MODE_CONFIG,
     ):
         """
         Initialize movement tracker with multi-person support + body segmentation.
@@ -67,6 +76,14 @@ class MovementTracker:
         # Latest contour pixel count (set by _process_segmentation). Lets callers
         # / tests read how thin the emitted outline is. 0 until first frame.
         self.last_contour_px = 0
+
+        # Visual mode (flame/lightning). Re-read from disk each broadcast so a
+        # JSON edit switches the TD shader live without restarting the tracker.
+        self.visual_mode_config_path = visual_mode_config_path
+        self.visual_mode = DEFAULT_VISUAL_MODE
+        self.visual_mode_index = MODE_INDEX[DEFAULT_VISUAL_MODE]
+        self._loop_i = 0  # per-iteration counter for throttled broadcasts
+        self._load_visual_mode()
 
         # Create separate pose detectors for each person
         self.max_people = min(max_people, 4)  # Limit to 4 for performance
@@ -229,6 +246,51 @@ class MovementTracker:
         except FileNotFoundError:
             print(f"Warning: Config file {path} not found, using defaults")
             return {}
+
+    # ------------------------------------------------------------------
+    # Visual mode (flame / lightning) toggle
+    # ------------------------------------------------------------------
+    def _load_visual_mode(self):
+        """Read the active visual mode from configs/visual_mode.json.
+
+        Called on init and again before each OSC broadcast, so editing the JSON
+        switches the TouchDesigner shader live (no tracker restart). On a missing
+        or malformed file we keep the last good mode and carry on — the outline
+        itself must never go down because a toggle file is briefly unreadable.
+        """
+        try:
+            with open(self.visual_mode_config_path, "r") as f:
+                cfg = json.load(f)
+            mode = str(cfg.get("mode", DEFAULT_VISUAL_MODE)).strip().lower()
+            if mode in MODE_INDEX:
+                self.visual_mode = mode
+                self.visual_mode_index = MODE_INDEX[mode]
+            else:
+                logger.warning(
+                    "visual_mode '%s' not in %s — keeping '%s'",
+                    mode,
+                    list(MODE_INDEX),
+                    self.visual_mode,
+                )
+        except FileNotFoundError:
+            pass  # no config yet -> default mode, no noise
+        except (json.JSONDecodeError, ValueError, OSError) as e:
+            logger.warning(
+                "visual_mode config unreadable (%s) — keeping '%s'", e, self.visual_mode
+            )
+
+    def _send_visual_mode(self):
+        """Broadcast the current visual mode on OSC for TouchDesigner.
+
+        Sends the integer index (drives a Switch TOP) and the name string (for
+        DAT-based readers). Re-reads the config first so live edits propagate.
+        """
+        self._load_visual_mode()
+        try:
+            self.osc_client.send_message("/visual/mode", float(self.visual_mode_index))
+            self.osc_client.send_message("/visual/mode_name", self.visual_mode)
+        except Exception as e:
+            logger.debug("visual mode OSC send error: %s", e)
 
     def detect_people_regions(self, frame):
         """
@@ -526,6 +588,12 @@ class MovementTracker:
 
                 # Send global statistics
                 self.send_global_stats(num_people_tracked)
+
+                # Broadcast visual mode (flame/lightning) ~1x/sec so TD can swap
+                # the body-outline shader live by reading /visual/mode.
+                if self._loop_i % 30 == 0:
+                    self._send_visual_mode()
+                self._loop_i += 1
 
                 # Calculate FPS
                 frame_time = time.time() - frame_start
