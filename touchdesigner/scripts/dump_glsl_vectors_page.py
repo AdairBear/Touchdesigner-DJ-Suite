@@ -77,43 +77,65 @@ def _dump_one(path):
     except Exception as e:
         _p("  page-walk err: " + str(e))
 
-    # --- 3. SEQUENCE groups + per-block parameters ---------------------------
-    # The Vectors page is sequence-backed. Print each sequence's block count
-    # and the actual par names inside block 0 so we know the true base names.
-    try:
-        _p("  --- sequence groups ---")
-        for sg in g.seq:
+    # --- 3. Count parameters (slots are FIXED on this build, not a sequence) --
+    # The probe's first run proved glsl.seq raises AttributeError ('sequences')
+    # here, so the Vectors page is NOT sequence-backed — slots are a fixed,
+    # contiguous set of pars. Look for any numeric count par that gates how
+    # many vector-uniform slots are exposed.
+    _p("  --- count pars (if any gate the slot total) ---")
+    found_count = False
+    for cnt in (
+        "numuniforms",
+        "numconstants",
+        "uniforms",
+        "numvecuniforms",
+        "numuniform",
+        "numvec",
+    ):
+        par = getattr(g.par, cnt, None)
+        if par is not None:
+            found_count = True
             try:
-                _p("    seq '%s'  numBlocks=%s" % (sg.name, sg.numBlocks))
-                if len(sg.blocks) > 0:
-                    blk = sg.blocks[0]
-                    bpars = [bp.name for bp in blk.pars]
-                    _p("      block[0] par names: " + str(bpars))
+                _p("    '%s' = %r" % (cnt, par.eval()))
             except Exception as e:
-                _p("    seq dump err: " + str(e))
-    except Exception as e:
-        _p("  seq-walk err: " + str(e))
+                _p("    '%s' present (read err: %s)" % (cnt, e))
+    if not found_count:
+        _p("    none found — slot total is fixed by the GLSL TOP itself.")
 
-    # --- 4. Direct probe of the names the build script TARGETS ---------------
-    # For each uniformname1..12 / value1..12: does the par exist, and what is
-    # its current value? This shows EXACTLY which slots are present + named.
-    _p("  --- uniformname1..12 / value1..12 presence + current value ---")
-    for i in range(1, 13):
+    # --- 4. Slot-by-slot truth: name + per-COMPONENT value (value{i}x..w) -----
+    # value{i} is a parGroup (XYZW) — accessing g.par.value{i} raises tdError,
+    # which is what crashed the first probe. Read the per-component pars
+    # value{i}x/y/z/w directly. Probe 1..16 to discover the true max slot count
+    # and reveal EXACTLY which uniformname slots are empty (the 2/4/5/6/7/9
+    # mystery). getattr(..., None) safely returns None for absent components.
+    _p("  --- slot 1..16: uniformname + value{i}[x,y,z,w] ---")
+    max_slot = 0
+    for i in range(1, 17):
         nm = getattr(g.par, "uniformname" + str(i), None)
-        vl = getattr(g.par, "value" + str(i), None)
-        nm_state = ("'%s'" % nm.eval()) if nm is not None else "<PAR MISSING>"
-        if vl is not None:
-            try:
-                vl_state = repr(vl.eval())
-            except Exception:
-                # multi-component value par — read the tuplet
+        comps = [
+            getattr(g.par, "value%d%s" % (i, c), None) for c in ("x", "y", "z", "w")
+        ]
+        if nm is None and all(c is None for c in comps):
+            continue  # slot doesn't exist on this build
+        max_slot = i
+        try:
+            nm_state = "'%s'" % nm.eval() if nm is not None else "<no name par>"
+        except Exception as e:
+            nm_state = "<name read err %s>" % e
+        vals = []
+        for c in comps:
+            if c is None:
+                vals.append("--")
+            else:
                 try:
-                    vl_state = repr([c.eval() for c in g.par[("value%d" % i)]])
+                    vals.append("%g" % c.eval())
                 except Exception as e:
-                    vl_state = "<read err %s>" % e
-        else:
-            vl_state = "<PAR MISSING>"
-        _p("    slot %2d: uniformname=%s  value=%s" % (i, nm_state, vl_state))
+                    vals.append("err:%s" % e)
+        _p(
+            "    slot %2d: uniformname=%-18s value=[%s]"
+            % (i, nm_state, ", ".join(vals))
+        )
+    _p("    >>> highest existing slot on %s = %d" % (g.name, max_slot))
 
 
 _p("==== GLSL VECTORS-PAGE PROBE (read-only) ====")
