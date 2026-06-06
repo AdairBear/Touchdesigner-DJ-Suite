@@ -130,6 +130,31 @@ Maps audio features to visual parameters:
 }
 ```
 
+## Body Outline Overlay (edge-confined)
+
+The body overlay is a **thin silhouette outline** — flames (or lightning) ride
+the contour line, rather than a filled glow covering the body.
+
+- **Contour at the source.** `movement_tracker.py` extracts a ~1-2 px body
+  contour with a morphological gradient (`cv2.morphologyEx(..., MORPH_GRADIENT)`)
+  instead of emitting a filled, dilated, Gaussian-blurred silhouette. This is the
+  edge-confined primitive the pipeline was missing — every downstream stage is
+  then confined to a thin band instead of widening a blob.
+- **Why it changed:** see `docs/audits/baseline_outline_audit_2026-06-05.md` (the
+  filled+blurred mask was the root cause of the "aura covering the body" look).
+- **Instrumentation:** the tracker logs `contour px` ~1x/sec — a thin outline is
+  ~0.3-2% of the frame; a blob would be ~25-30%.
+
+### Visual modes: flame / lightning
+
+Switch the outline look live via `configs/visual_mode.json` (`"mode": "flame"` or
+`"lightning"`). The tracker broadcasts `/visual/mode` over OSC so a TouchDesigner
+Switch TOP can swap shaders without a restart.
+
+- `touchdesigner/shaders/fire_aura.glsl` — flame look (primary)
+- `touchdesigner/shaders/lightning.glsl` — electric blue/white, onset-triggered
+- Wiring: `docs/setup/visual_mode_toggle.md`
+
 ## 🎨 TouchDesigner Integration
 
 The system sends OSC messages to TouchDesigner (default: `localhost:7000`).
