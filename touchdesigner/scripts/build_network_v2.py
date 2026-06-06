@@ -226,11 +226,28 @@ def build():
     except Exception:
         pass
 
+    # Black Constant TOP for GLSL inputs 1 & 2. BOTH shaders sample
+    # sTD2DInputs[1] and sTD2DInputs[2]; TD sizes sTD2DInputs[] to the
+    # CONNECTED-input count, so wiring only input 0 made indices 1/2
+    # out-of-range -> "GLSL Shader has compile errors". The shaders read
+    # those inputs as max(uEnergyUniform, texture(...).r), so feeding BLACK
+    # makes the uniform dominate (the intended "optional spatial modulation"
+    # default) while keeping all three sampler indices valid.
+    zero_src = _make(constantTOP, "zero_src", -250, 400)
+    try:
+        zero_src.par.colorr = 0.0
+        zero_src.par.colorg = 0.0
+        zero_src.par.colorb = 0.0
+        zero_src.par.alpha = 0.0
+        zero_src.par.resolutionw = MASK_W
+        zero_src.par.resolutionh = MASK_H
+    except Exception as e:
+        _log("  zero_src param warn: " + str(e))
+
     # ----------------------------------------------------------------
     # 3+4. GLSL TOPs — fire + lightning. Same input shape, same uniform
     #      contract, so the Switch can swap them with zero re-wiring.
-    #      Input 0 = contour mask; inputs 1/2 left for motion/audio TOPs
-    #      (optional spatial modulation — shaders tolerate their absence).
+    #      Input 0 = contour mask; inputs 1/2 = black (uniforms dominate).
     # ----------------------------------------------------------------
     fire_src = _text_dat_from_file("fire_aura_src", FIRE_GLSL, -250, 250)
     light_src = _text_dat_from_file("lightning_src", LIGHT_GLSL, -250, 100)
@@ -245,7 +262,9 @@ def build():
             g.par.format = "rgba16float"
         except Exception as e:
             _log("  " + name + " res/format warn: " + str(e))
-        g.setInputs([edge_blur])  # input 0 = contour
+        # input 0 = contour; 1 & 2 = black so sTD2DInputs[1]/[2] exist
+        # (prevents the sampler-index-out-of-range compile error).
+        g.setInputs([edge_blur, zero_src, zero_src])
         # A stock GLSL TOP ships with only ~6 uniform slots; we need 10
         # (uniformname1..10 / value1..10). Grow the uniform parameter
         # sequence FIRST, otherwise uniformname7..10 don't exist yet.
