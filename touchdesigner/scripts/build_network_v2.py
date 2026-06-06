@@ -218,13 +218,28 @@ def build():
     # ----------------------------------------------------------------
     edge = _make(edgeTOP, "edge_detect", -400, 400)
     edge.setInputs([body_mask])
+    # Upscale to canvas size HERE. body_mask_top is locked to MASK_W x MASK_H
+    # (640x480) by the segmentation_mask_reader callback (copyNumpyArray +
+    # setup() force the Script TOP resolution to match the mmap array), so the
+    # mask itself must stay 640x480. edge_detect is the first TOP we can resize:
+    # render it at OUT_W x OUT_H so the contour fills the 1280x720 Syphon canvas
+    # instead of living in a 640x480 corner. Everything downstream inherits this.
+    try:
+        edge.par.outputresolution = "custom"
+        edge.par.resolutionw = OUT_W
+        edge.par.resolutionh = OUT_H
+    except Exception as e:
+        _log("  edge_detect res set warn: " + str(e))
 
     edge_blur = _make(blurTOP, "edge_blur", -250, 400)
     edge_blur.setInputs([edge])
     try:
         edge_blur.par.size = 1.0  # small — contour is already thin
-    except Exception:
-        pass
+        edge_blur.par.outputresolution = "custom"
+        edge_blur.par.resolutionw = OUT_W
+        edge_blur.par.resolutionh = OUT_H
+    except Exception as e:
+        _log("  edge_blur res set warn: " + str(e))
 
     # Black Constant TOP for GLSL inputs 1 & 2. BOTH shaders sample
     # sTD2DInputs[1] and sTD2DInputs[2]; TD sizes sTD2DInputs[] to the
@@ -239,8 +254,12 @@ def build():
         zero_src.par.colorg = 0.0
         zero_src.par.colorb = 0.0
         zero_src.par.alpha = 0.0
-        zero_src.par.resolutionw = MASK_W
-        zero_src.par.resolutionh = MASK_H
+        # Match the GLSL output / contour resolution (OUT_W x OUT_H). Mismatched
+        # GLSL input sizes (640x480 black vs 1280x720 contour) are part of why
+        # the output landed in a corner — keep all three GLSL inputs the same.
+        zero_src.par.outputresolution = "custom"
+        zero_src.par.resolutionw = OUT_W
+        zero_src.par.resolutionh = OUT_H
     except Exception as e:
         _log("  zero_src param warn: " + str(e))
 
