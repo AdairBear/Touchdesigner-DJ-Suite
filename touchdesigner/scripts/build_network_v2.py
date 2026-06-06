@@ -284,18 +284,19 @@ def build():
         # input 0 = contour; 1 & 2 = black so sTD2DInputs[1]/[2] exist
         # (prevents the sampler-index-out-of-range compile error).
         g.setInputs([edge_blur, zero_src, zero_src])
-        # A stock GLSL TOP ships with only ~6 uniform slots; we need 10
-        # (uniformname1..10 / value1..10). Grow the uniform parameter
-        # sequence FIRST, otherwise uniformname7..10 don't exist yet.
-        _ensure_glsl_uniform_slots(g, len(UNIFORM_NAMES))
-        # Map uniform names into the GLSL TOP's uniformname1..10 slots.
-        # value1..10 are written every frame by aura_compositor.py.
-        for i, uname in enumerate(UNIFORM_NAMES, start=1):
-            par = getattr(g.par, "uniformname" + str(i), None)
+        # The GLSL TOP (TD 2022.35320) already exposes 16 fixed Vector-uniform
+        # slots — uniname0..15 / value0x..15x — so NO growth is needed. The par
+        # names are 0-INDEXED (uniname0, value0x), NOT the uniformname1.. the
+        # old helper assumed; that mismatch is why every name write was a no-op
+        # and the shader saw "Uniform not assigned". Map UNIFORM_NAMES[0..9]
+        # straight into uniname0..9. value0x..9x are written every frame by
+        # aura_compositor.py.
+        for i, uname in enumerate(UNIFORM_NAMES):  # i = 0..9 (0-indexed pars)
+            par = getattr(g.par, "uniname" + str(i), None)
             if par is not None:
                 par.val = uname
             else:
-                _log("  " + name + ": uniformname" + str(i) + " slot STILL missing")
+                _log("  " + name + ": uniname" + str(i) + " slot MISSING")
         return g
 
     fire_glsl = _glsl("fire_aura_glsl", fire_src, 250)

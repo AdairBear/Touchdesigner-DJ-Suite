@@ -157,16 +157,18 @@ def _wire_glsl_uniforms_once():
             "uBurstDecay",  # value9
             "uTime",  # value10
         ]
-        for i, n in enumerate(names, start=1):
-            par = getattr(glsl.par, "uniformname" + str(i), None)
+        # Par names are 0-INDEXED on this TD build: uniname0..9 (NOT
+        # uniformname1..). 16 slots already exist; just assign the first 10.
+        for i, n in enumerate(names):  # i = 0..9
+            par = getattr(glsl.par, "uniname" + str(i), None)
             if par is None:
-                print("[uniforms] uniformname" + str(i) + " MISSING on fire_aura_glsl")
+                print("[uniforms] uniname" + str(i) + " MISSING on fire_aura_glsl")
                 continue
             if par.val != n:
                 par.val = n
-                print("[uniforms] set uniformname" + str(i) + " = " + n)
+                print("[uniforms] set uniname" + str(i) + " = " + n)
             else:
-                print("[uniforms] uniformname" + str(i) + " already = " + n)
+                print("[uniforms] uniname" + str(i) + " already = " + n)
         try:
             glsl.cook(force=True)
         except Exception as e:
@@ -640,15 +642,18 @@ def onFrameStart(frame):
     if glsl is not None:
         # Time is automatic via iTime uniform, but we push custom uniforms
         try:
-            glsl.par.value1x = flame_intensity  # uFlameIntensity
-            glsl.par.value2x = turbulence  # uTurbulence
-            glsl.par.value3x = distortion  # uDistortion
-            glsl.par.value4x = sparkle  # uSparkle
-            glsl.par.value5x = motion_norm  # uMotionEnergy
-            glsl.par.value6x = bass_smooth  # uBassEnergy
-            glsl.par.value7x = mid_smooth  # uMidEnergy
-            glsl.par.value8x = high_smooth  # uHighEnergy
-            glsl.par.value9x = burst_decay  # uBurstDecay
+            # 0-INDEXED value pars: value0x..value8x map to uniname0..8.
+            # (Was value1x..value9x — an off-by-one that wrote every band one
+            # slot high. uTime = uniname9/value9x stays shader-driven.)
+            glsl.par.value0x = flame_intensity  # uFlameIntensity (uniname0)
+            glsl.par.value1x = turbulence  # uTurbulence    (uniname1)
+            glsl.par.value2x = distortion  # uDistortion    (uniname2)
+            glsl.par.value3x = sparkle  # uSparkle       (uniname3)
+            glsl.par.value4x = motion_norm  # uMotionEnergy  (uniname4)
+            glsl.par.value5x = bass_smooth  # uBassEnergy    (uniname5)
+            glsl.par.value6x = mid_smooth  # uMidEnergy     (uniname6)
+            glsl.par.value7x = high_smooth  # uHighEnergy    (uniname7)
+            glsl.par.value8x = burst_decay  # uBurstDecay    (uniname8)
         except Exception:
             pass
 
