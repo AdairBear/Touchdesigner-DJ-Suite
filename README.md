@@ -130,9 +130,54 @@ Maps audio features to visual parameters:
 }
 ```
 
+## Body Outline Overlay (edge-confined)
+
+The body overlay is a **thin silhouette outline** — flames (or lightning) ride
+the contour line, rather than a filled glow covering the body.
+
+- **Contour at the source.** `movement_tracker.py` extracts a ~1-2 px body
+  contour with a morphological gradient (`cv2.morphologyEx(..., MORPH_GRADIENT)`)
+  instead of emitting a filled, dilated, Gaussian-blurred silhouette. This is the
+  edge-confined primitive the pipeline was missing — every downstream stage is
+  then confined to a thin band instead of widening a blob.
+- **Why it changed:** see `docs/audits/baseline_outline_audit_2026-06-05.md` (the
+  filled+blurred mask was the root cause of the "aura covering the body" look).
+- **Instrumentation:** the tracker logs `contour px` ~1x/sec — a thin outline is
+  ~0.3-2% of the frame; a blob would be ~25-30%.
+
+### Visual modes: flame / lightning
+
+Switch the outline look live via `configs/visual_mode.json` (`"mode": "flame"` or
+`"lightning"`). The tracker broadcasts `/visual/mode` over OSC so a TouchDesigner
+Switch TOP can swap shaders without a restart.
+
+- `touchdesigner/shaders/fire_aura.glsl` — flame look (primary)
+- `touchdesigner/shaders/lightning.glsl` — electric blue/white, onset-triggered
+- Wiring: `docs/setup/visual_mode_toggle.md`
+
 ## 🎨 TouchDesigner Integration
 
-The system sends OSC messages to TouchDesigner (default: `localhost:7000`):
+The system sends OSC messages to TouchDesigner (default: `localhost:7000`).
+
+### 🆕 Generative Visual Control (NEW!)
+
+**AI-driven generative visual control is now available!** The system can control:
+- Geometry types (particles, sphere, fractals, mesh)
+- Shader color palettes (theme-based hex colors)
+- Visual effects (particle bursts, flashes, pulses)
+- Audio-visual sync mappings (bass → particles, etc.)
+- Arbitrary parameter control (any TouchDesigner parameter)
+
+**📖 Get Started:** See **[QUICKSTART_OSC_INTEGRATION.md](QUICKSTART_OSC_INTEGRATION.md)** for 3-step implementation guide.
+
+**Documentation:**
+- [Quick Start Guide](QUICKSTART_OSC_INTEGRATION.md) - Start here!
+- [Implementation Checklist](GENERATIVE_OSC_CHECKLIST.md) - Step-by-step TouchDesigner setup
+- [DAT Scripts](TOUCHDESIGNER_DAT_SCRIPTS.md) - Copy-paste Python scripts for TouchDesigner
+- [Technical Deep-Dive](docs/GENERATIVE_OSC_SETUP.md) - Full OSC architecture details
+- [Test Suite](test_td_osc_integration.py) - Automated testing script
+
+---
 
 ### Multi-Person Movement Messages
 

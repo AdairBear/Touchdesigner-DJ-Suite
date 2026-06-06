@@ -1,0 +1,25 @@
+=== tracker process ===
+thomasadair      35099  34.0  0.3 35694168 448904 s002  R+   11:33AM   0:53.22 /usr/local/Cellar/python@3.11/3.11.14_1/Frameworks/Python.framework/Versions/3.11/Resources/Python.app/Contents/MacOS/Python python/movement_tracker.py --max-people 1 --no-preview
+
+=== mask file ===
+-rw-r--r--@ 1 thomasadair  wheel  307204 Apr 19 11:35 /tmp/djsam_bodymask.raw
+=== mask mtime ===
+Apr 19 11:35:48 2026 307204 bytes
+=== age in seconds ===
+1
+
+=== last 40 lines of tracker log ===
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+I0000 00:00:1776623628.477102 15089701 gl_context.cc:369] GL version: 2.1 (2.1 ATI-7.0.24), renderer: AMD Radeon Pro 580X OpenGL Engine
+INFO: Created TensorFlow Lite XNNPACK delegate for CPU.
+W0000 00:00:1776623630.849641 15089907 inference_feedback_manager.cc:114] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.
+W0000 00:00:1776623631.080746 15089909 inference_feedback_manager.cc:114] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.
+2026-04-19 11:33:52,833 [INFO] Segmentation mask mmap ready: /tmp/djsam_bodymask.raw  (640x480)
+W0000 00:00:1776623633.868609 15089904 landmark_projection_calculator.cc:186] Using NORM_RECT without IMAGE_DIMENSIONS is only supported for the square ROI. Provide IMAGE_DIMENSIONS or use PROJECTION_MATRIX.
+
+=== OSC port 7000 ===
+lsof: WARNING: can't stat() nfs file system /Users/thomasadair/.DDPreview/.DDPreviewDisk
+      Output information may be incomplete.
+      assuming "dev=1a000003" from mount table
+COMMAND     PID        USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+TouchDesi 97982 thomasadair   42u  IPv4 0x32718fe98665321e      0t0  UDP *:afs3-fileserver
