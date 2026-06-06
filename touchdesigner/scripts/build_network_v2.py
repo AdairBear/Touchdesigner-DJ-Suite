@@ -120,6 +120,60 @@ def _text_dat_from_file(name, file_path, x, y):
     return dat
 
 
+def _ensure_glsl_uniform_slots(glsl, n):
+    """Grow a GLSL TOP's uniform parameter sequence so uniformname1..n /
+    value1..n all exist. A stock GLSL TOP ships with only ~6 slots; the
+    pipeline needs 10. The sequence name varies by TD version, so we
+    self-discover the sequence that owns the uniformname/value block and
+    grow it, with a fallback to a numeric count par. Logs what it did.
+    """
+    # Already big enough?
+    if getattr(glsl.par, "uniformname" + str(n), None) is not None:
+        return True
+    grown = False
+    try:
+        for seq in glsl.seq:
+            try:
+                block_pars = [p.name for p in seq[0].pars]
+            except Exception:
+                continue
+            owns_uniform = any("uniformname" in pn for pn in block_pars) or (
+                "value" in block_pars
+            )
+            if not owns_uniform:
+                continue
+            try:
+                if seq.numBlocks < n:
+                    seq.numBlocks = n
+                grown = True
+                _log(
+                    "  grew GLSL uniform seq '%s' -> %d blocks"
+                    % (seq.name, seq.numBlocks)
+                )
+            except Exception as e:
+                _log("  seq '%s' grow err: %s" % (seq.name, str(e)))
+    except Exception as e:
+        _log("  uniform-seq discovery err: " + str(e))
+    # Fallback: some TD versions gate the count behind a single par.
+    if getattr(glsl.par, "uniformname" + str(n), None) is None:
+        for cnt in ("numuniforms", "numconstants", "uniforms"):
+            par = getattr(glsl.par, cnt, None)
+            if par is not None:
+                try:
+                    par.val = n
+                    grown = True
+                    _log("  set GLSL count par '%s' = %d" % (cnt, n))
+                except Exception as e:
+                    _log("  count par '%s' set err: %s" % (cnt, str(e)))
+                break
+    if getattr(glsl.par, "uniformname" + str(n), None) is None:
+        _log(
+            "  WARN could not grow %s uniform slots to %d — set manually"
+            % (glsl.name, n)
+        )
+    return grown
+
+
 def build():
     _log("=== building canonical v2 network under /project1 ===")
 
@@ -170,6 +224,10 @@ def build():
         except Exception as e:
             _log("  " + name + " res/format warn: " + str(e))
         g.setInputs([edge_blur])  # input 0 = contour
+        # A stock GLSL TOP ships with only ~6 uniform slots; we need 10
+        # (uniformname1..10 / value1..10). Grow the uniform parameter
+        # sequence FIRST, otherwise uniformname7..10 don't exist yet.
+        _ensure_glsl_uniform_slots(g, len(UNIFORM_NAMES))
         # Map uniform names into the GLSL TOP's uniformname1..10 slots.
         # value1..10 are written every frame by aura_compositor.py.
         for i, uname in enumerate(UNIFORM_NAMES, start=1):
@@ -177,7 +235,7 @@ def build():
             if par is not None:
                 par.val = uname
             else:
-                _log("  " + name + ": uniformname" + str(i) + " slot missing")
+                _log("  " + name + ": uniformname" + str(i) + " slot STILL missing")
         return g
 
     fire_glsl = _glsl("fire_aura_glsl", fire_src, 250)
@@ -208,23 +266,28 @@ def build():
     audio_spectrum = _make(audiospectrumCHOP, "audio_spectrum", -600, -250)
     audio_spectrum.setInputs([audio_in])
 
-    compositor = _text_dat_from_file("aura_compositor", COMPOSITOR, -400, -250)
-    # aura_compositor.py is an Execute DAT — run it on Frame Start so it
-    # computes audio bands and writes the GLSL uniforms each frame.
-    try:
-        compositor.par.executefromfile = False
-    except Exception:
-        pass
-    for pname in ("framestart", "frame", "active"):
-        try:
-            setattr(compositor.par, pname, True)
-        except Exception:
-            pass
-    _log(
-        "  NOTE: confirm aura_compositor DAT type/exec flags in TD — it is an "
-        "Execute DAT in the canonical build; if pasted as Text DAT, change it "
-        'to a DAT Execute with "Frame Start" ON.'
-    )
+    # aura_compositor.py is an EXECUTE DAT (not a Text DAT): it runs on Frame
+    # Start, reads audio_spectrum, and writes value1..value9 into both GLSL
+    # TOPs each frame. Create it as executeDAT so the onFrameStart callback
+    # actually fires — a Text DAT would just sit there inert.
+    compositor = _make(executeDAT, "aura_compositor", -400, -250)
+    if os.path.exists(COMPOSITOR):
+        with open(COMPOSITOR) as _f:
+            compositor.text = _f.read()
+    else:
+        _log("  !! aura_compositor source missing: " + COMPOSITOR)
+    # Enable the Frame Start callback + activate. Execute DAT par names:
+    # active, start, create, exit, framestart, frameend, play.
+    for pname in ("active", "framestart"):
+        par = getattr(compositor.par, pname, None)
+        if par is not None:
+            try:
+                par.val = True
+                _log("  aura_compositor.%s = True" % pname)
+            except Exception as e:
+                _log("  aura_compositor.%s set err: %s" % (pname, str(e)))
+        else:
+            _log("  aura_compositor: par '%s' missing — set manually" % pname)
 
     # ----------------------------------------------------------------
     # 6. SWITCH — index from /visual/mode (0=flame, 1=lightning).
@@ -289,8 +352,8 @@ def build():
 
     _log("=== build complete ===")
     _log(
-        "Next: confirm aura_compositor is a DAT Execute (Frame Start ON), "
-        "pick BlackHole 2ch on audio_in, then start movement_tracker.py."
+        "Next: select BlackHole 2ch on audio_in (only remaining manual touch), "
+        "then start movement_tracker.py."
     )
     _log('OBS: add a Syphon Client source -> "' + SYPHON_NAME + '".')
 
