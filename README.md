@@ -132,7 +132,27 @@ Maps audio features to visual parameters:
 
 ## 🎨 TouchDesigner Integration
 
-The system sends OSC messages to TouchDesigner (default: `localhost:7000`):
+The system sends OSC messages to TouchDesigner (default: `localhost:7000`).
+
+### 🆕 Generative Visual Control (NEW!)
+
+**AI-driven generative visual control is now available!** The system can control:
+- Geometry types (particles, sphere, fractals, mesh)
+- Shader color palettes (theme-based hex colors)
+- Visual effects (particle bursts, flashes, pulses)
+- Audio-visual sync mappings (bass → particles, etc.)
+- Arbitrary parameter control (any TouchDesigner parameter)
+
+**📖 Get Started:** See **[QUICKSTART_OSC_INTEGRATION.md](QUICKSTART_OSC_INTEGRATION.md)** for 3-step implementation guide.
+
+**Documentation:**
+- [Quick Start Guide](QUICKSTART_OSC_INTEGRATION.md) - Start here!
+- [Implementation Checklist](GENERATIVE_OSC_CHECKLIST.md) - Step-by-step TouchDesigner setup
+- [DAT Scripts](TOUCHDESIGNER_DAT_SCRIPTS.md) - Copy-paste Python scripts for TouchDesigner
+- [Technical Deep-Dive](docs/GENERATIVE_OSC_SETUP.md) - Full OSC architecture details
+- [Test Suite](test_td_osc_integration.py) - Automated testing script
+
+---
 
 ### Multi-Person Movement Messages
 

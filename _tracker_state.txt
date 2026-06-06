@@ -1,0 +1,20 @@
+--- movement_tracker procs ---
+--- MASK FILE ---
+-rw-r--r--@ 1 thomasadair  wheel  307204 Apr 18 22:37 /tmp/djsam_bodymask.raw
+--- MASK MTIME / SIZE ---
+Apr 18 22:37:40 2026 (mtime) 307204 bytes
+--- NOW ---
+Sun Apr 19 11:26:28 PDT 2026
+--- OSC port 7000 listener ---
+lsof: WARNING: can't stat() nfs file system /Users/thomasadair/.DDPreview/.DDPreviewDisk
+      Output information may be incomplete.
+      assuming "dev=1a000003" from mount table
+COMMAND     PID        USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+TouchDesi 97982 thomasadair   42u  IPv4 0x32718fe98665321e      0t0  UDP *:afs3-fileserver
+--- python procs ---
+thomasadair       4678   0.3  0.0 35011684  60908   ??  S    12:43AM   0:44.37 /usr/local/Cellar/python@3.11/3.11.14_1/Frameworks/Python.framework/Versions/3.11/Resources/Python.app/Contents/MacOS/Python /Users/thomasadair/.local/bin/hermes mcp serve
+thomasadair       4540   0.1  0.0 35013732  60824   ??  S    12:42AM   0:44.92 /usr/local/Cellar/python@3.11/3.11.14_1/Frameworks/Python.framework/Versions/3.11/Resources/Python.app/Contents/MacOS/Python /Users/thomasadair/.local/bin/hermes mcp serve
+thomasadair       4680   0.1  0.0 34995272  62292   ??  S    12:43AM   0:44.94 /usr/local/Cellar/python@3.11/3.11.14_1/Frameworks/Python.framework/Versions/3.11/Resources/Python.app/Contents/MacOS/Python /Users/thomasadair/.local/bin/hermes mcp serve
+thomasadair       8356   0.0  0.0 33855120  45872   ??  S    Wed08PM   0:01.52 /Users/thomasadair/.local/bin/uv tool uvx --python 3.13 chroma-mcp --client-type persistent --data-dir /Users/thomasadair/.claude-mem/chroma
+thomasadair      68470   0.0  0.1 35149164 184688   ??  R    Wed07AM   1:49.92 /usr/local/Cellar/python@3.11/3.11.14_1/Frameworks/Python.framework/Versions/3.11/Resources/Python.app/Contents/MacOS/Python -m hermes_cli.main gateway run --replace
+thomasadair       1470   0.0  0.1 36263652  95424   ??  R    10Apr26   2:51.55 /usr/local/Cellar/python@3.12/3.12.13/Frameworks/Python.framework/Versions/3.12/Resources/Python.app/Contents/MacOS/Python /Users/thomasadair/Projects/724-office/xiaowang.py

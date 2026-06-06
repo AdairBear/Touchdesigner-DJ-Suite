@@ -1,0 +1,24 @@
+
+[rdiag] === RENDER CHAIN === ts=0
+[rdiag] body_mask_top res=640x480 in=0=- bypass=False
+[rdiag] edge_detect res=640x480 in=0=body_mask_top bypass=False
+[rdiag] edge_blur res=640x480 in=0=edge_detect bypass=False
+[rdiag] noise_embers res=1280x720 in=0=-,1=- bypass=False
+[rdiag] motion_energy_top res=1x15 in=none bypass=False
+[rdiag] audio_energy_top res=1x18 in=none bypass=False
+[rdiag] fire_aura_shader_code res=?x? in=0=- bypass=False
+[rdiag] fire_aura_glsl res=640x480 in=0=edge_blur,1=motion_energy_top,2=audio_energy_top bypass=False
+[rdiag] flame_layers res=1280x720 in=0=fire_aura_glsl,1=noise_embers,2=- bypass=False
+[rdiag] bloom_blur res=1280x720 in=0=flame_layers bypass=False
+[rdiag] bloom_post res=1280x720 in=0=flame_layers,1=bloom_blur,2=- bypass=False
+[rdiag] burst_flash res=1280x720 in=0=- bypass=False
+[rdiag] camera_in res=1280x720 in=none bypass=False
+[rdiag] final_composite res=1280x720 in=0=camera_in,1=bloom_post,2=burst_flash,3=- bypass=False
+[rdiag] output res=1280x720 in=0=final_composite bypass=False
+[rdiag] --- syphon/spout search ---
+[rdiag] /project1/syphonOut1 type=syphonspoutoutTOP in0<-/project1/output pars={'active': True, 'sendername': 'TDSyphonSpoutOut'}
+[rdiag] --- errored ops ---
+[rdiag] errored count: 0
+[rdiag] audio_params values: {'bass_energy': 0.0, 'bass_smooth': 0.0, 'mid_energy': 0.0, 'mid_smooth': 0.0, 'high_energy': 0.0, 'high_smooth': 0.0, 'onset': 0.0, 'onset_trigger': 0.0, 'flame_intensity': 3e-05, 'particle_size': 0.30003, 'emission_rate': 100.001, 'turbulence': 3e-05, 'velocity': 0.50004, 'distortion': 3e-05, 'sparkle': 2e-05, 'bloom_intensity': 0.20007, 'burst_active': 0.0, 'burst_decay': 0.0}
+[rdiag] audio_reactive_mapper pars: {'chop': 'audio_spectrum', 'active': True, 'valuechange': True, 'offtoon': False, 'whileon': False, 'whileoff': False}
+[rdiag] === END ===

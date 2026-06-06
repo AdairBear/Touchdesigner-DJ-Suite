@@ -1,36 +1,68 @@
 """
-Movement Tracker - MediaPipe Pose to OSC
-Tracks multiple people's body movements and sends to TouchDesigner
+Movement Tracker - MediaPipe Pose to OSC + Body Segmentation Mask
+Tracks multiple people's body movements and sends to TouchDesigner.
+Outputs body segmentation mask via shared memory (mmap) for real-time
+consumption by TouchDesigner's Script TOP.
 """
 
 import cv2
 import mediapipe as mp
 from pythonosc import udp_client
 import numpy as np
+import mmap
+import os
 import time
 import json
+import logging
 from typing import Dict, Optional, List
 
+logger = logging.getLogger(__name__)
+
+# --- Shared memory mask config ---
+MASK_PATH = "/tmp/djsam_bodymask.raw"
+MASK_W, MASK_H = 640, 480          # Resolution of the segmentation mask
+# NOTE: Header size MUST match body_mask_sender.py (the external writer).
+# body_mask_sender.py uses a 4-byte uint32 frame counter only.
+# A previous mismatch here (8 bytes) caused an _platform_memmove
+# EXC_BAD_ACCESS segfault inside TouchDesigner during project onStart
+# because the consumer tried to mmap 4 bytes past the file end.
+HEADER_SIZE = 4                     # 4 bytes frame counter (uint32)
+TOTAL_SIZE = HEADER_SIZE + MASK_W * MASK_H
+
+
 class MovementTracker:
-    def __init__(self, 
-                 osc_ip: str = "127.0.0.1", 
+    def __init__(self,
+                 osc_ip: str = "127.0.0.1",
                  osc_port: int = 7000,
                  config_path: str = "configs/movement_mappings.json",
-                 max_people: int = 4):
+                 max_people: int = 4,
+                 camera_id: int = 0,
+                 enable_segmentation: bool = True,
+                 mask_path: str = MASK_PATH):
         """
-        Initialize movement tracker with multi-person support
-        
+        Initialize movement tracker with multi-person support + body segmentation.
+
         Args:
             osc_ip: IP address for OSC messages (TouchDesigner)
             osc_port: Port for OSC messages
             config_path: Path to movement mappings config
             max_people: Maximum number of people to track (1-4)
+            camera_id: Camera device index
+            enable_segmentation: Enable body segmentation mask output
+            mask_path: Path to mmap file for segmentation mask
         """
-        # MediaPipe setup - using Holistic for better multi-person detection
+        # MediaPipe setup
         self.mp_pose = mp.solutions.pose
         self.mp_drawing = mp.solutions.drawing_utils
         self.mp_holistic = mp.solutions.holistic
-        
+
+        # Segmentation config
+        self.enable_segmentation = enable_segmentation
+        self.mask_path = mask_path
+        self.mask_mmap = None
+        self.mask_fh = None
+        self.frame_counter = 0
+
         # Create separate pose detectors for each person
         self.max_people = min(max_people, 4)  # Limit to 4 for performance
         self.pose_detectors = []
@@ -39,32 +71,103 @@ class MovementTracker:
                 static_image_mode=False,
                 min_detection_confidence=0.5,
                 min_tracking_confidence=0.5,
-                model_complexity=1
+                model_complexity=1,
+                enable_segmentation=self.enable_segmentation,
+                smooth_segmentation=self.enable_segmentation,
+                smooth_landmarks=True,
             )
             self.pose_detectors.append(detector)
-        
+
         # OSC client to send to TouchDesigner
         self.osc_client = udp_client.SimpleUDPClient(osc_ip, osc_port)
-        
+
         # Webcam
-        self.cap = cv2.VideoCapture(0)
+        self.cap = cv2.VideoCapture(camera_id)
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
         self.cap.set(cv2.CAP_PROP_FPS, 30)
-        
+
         # Movement tracking state for each person
         self.prev_positions: List[Dict[str, float]] = [{} for _ in range(self.max_people)]
         self.motion_energy: List[float] = [0.0 for _ in range(self.max_people)]
         self.tracking_active: List[bool] = [False for _ in range(self.max_people)]
         self.person_boxes: List[Optional[tuple]] = [None for _ in range(self.max_people)]
-        
+
         # Load configuration
         self.config = self._load_config(config_path)
-        
+
         # Performance monitoring
         self.frame_times = []
         self.fps = 0
+
+        # Initialize segmentation shared memory
+        if self.enable_segmentation:
+            self._init_mask_mmap()
         
+    # ------------------------------------------------------------------
+    # Segmentation mask shared memory
+    # ------------------------------------------------------------------
+    def _init_mask_mmap(self):
+        """Create / open the mmap file for body segmentation mask output."""
+        if not os.path.exists(self.mask_path):
+            with open(self.mask_path, 'wb') as f:
+                f.write(bytes(TOTAL_SIZE))
+            logger.info(f"Created mask mmap file: {self.mask_path}")
+        self.mask_fh = open(self.mask_path, 'r+b')
+        self.mask_mmap = mmap.mmap(self.mask_fh.fileno(), TOTAL_SIZE)
+        logger.info(f"Segmentation mask mmap ready: {self.mask_path}  ({MASK_W}x{MASK_H})")
+
+    def _write_mask(self, mask_array: np.ndarray):
+        """Write a grayscale mask frame into shared memory.
+        Header layout (8 bytes):
+            [0:4]  uint32 frame counter
+            [4:8]  uint32 timestamp in milliseconds (wraps every ~49 days)
+        Body:
+            [8:]   MASK_W * MASK_H bytes, row-major, uint8 0-255
+        """
+        if self.mask_mmap is None:
+            return
+        # Header is a single uint32 frame counter (4 bytes) to match
+        # body_mask_sender.py. Timestamp is no longer embedded — if you
+        # need it, add a separate OSC channel rather than re-widening
+        # the header (that mismatch caused a segfault in TD).
+        header = np.uint32(self.frame_counter).tobytes()
+        self.mask_mmap.seek(0)
+        self.mask_mmap.write(header)
+        self.mask_mmap.write(mask_array.tobytes())
+        self.mask_mmap.flush()
+
+    def _process_segmentation(self, results_list) -> np.ndarray:
+        """Merge segmentation masks from all detected people into one grayscale mask.
+        Applies morphological cleanup + Gaussian blur for organic edges.
+        Returns MASK_H x MASK_W uint8 array.
+        """
+        combined = None
+        for results in results_list:
+            if results is not None and results.segmentation_mask is not None:
+                raw = results.segmentation_mask  # float32 [0,1]
+                if combined is None:
+                    combined = raw.copy()
+                else:
+                    # Union of masks (max)
+                    if combined.shape == raw.shape:
+                        combined = np.maximum(combined, raw)
+                    else:
+                        raw_resized = cv2.resize(raw, (combined.shape[1], combined.shape[0]))
+                        combined = np.maximum(combined, raw_resized)
+
+        if combined is None:
+            return np.zeros((MASK_H, MASK_W), dtype=np.uint8)
+
+        # Threshold + morphological cleanup
+        binary = (combined > 0.5).astype(np.uint8) * 255
+        kernel = np.ones((5, 5), np.uint8)
+        binary = cv2.dilate(binary, kernel, iterations=2)
+        binary = cv2.GaussianBlur(binary, (15, 15), 0)
+
+        # Resize to output dimensions
+        return cv2.resize(binary, (MASK_W, MASK_H), interpolation=cv2.INTER_LINEAR)
+
     def _load_config(self, path: str) -> dict:
         """Load movement mappings configuration"""
         try:
@@ -257,70 +360,80 @@ class MovementTracker:
     
     def run(self, show_preview: bool = True):
         """
-        Main tracking loop with multi-person support
-        
+        Main tracking loop with multi-person support + segmentation mask output.
+
         Args:
             show_preview: Whether to display visualization window
         """
+        seg_status = "ON" if self.enable_segmentation else "OFF"
         print("Movement Tracker started (Multi-Person Mode)...")
         print(f"Tracking up to {self.max_people} people")
+        print(f"Segmentation mask: {seg_status}")
+        if self.enable_segmentation:
+            print(f"  Mask file : {self.mask_path}")
+            print(f"  Mask size : {MASK_W}x{MASK_H} ({TOTAL_SIZE} bytes)")
         print(f"Sending OSC to {self.osc_client._address}:{self.osc_client._port}")
         print("Press ESC to quit")
-        
+
         try:
             while self.cap.isOpened():
                 frame_start = time.time()
-                
+
                 success, frame = self.cap.read()
                 if not success:
                     print("Failed to read frame")
                     continue
-                
+
                 # Flip frame horizontally for mirror view
                 frame = cv2.flip(frame, 1)
-                
+
                 # Convert to RGB for MediaPipe
                 frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                
+
                 # Get regions for multi-person detection
                 regions = self.detect_people_regions(frame)
-                
+
+                # Collect results for segmentation merge
+                all_results = []
+
                 # Track people in each region
                 num_people_tracked = 0
                 for person_id in range(min(self.max_people, len(regions))):
                     x1, y1, x2, y2 = regions[person_id]
-                    
+
                     # Ensure bounds are valid
                     x1, y1 = max(0, x1), max(0, y1)
                     x2 = min(frame.shape[1], x2)
                     y2 = min(frame.shape[0], y2)
-                    
+
                     # Extract region
                     region = frame_rgb[y1:y2, x1:x2]
-                    
+
                     if region.size == 0:
+                        all_results.append(None)
                         continue
-                    
+
                     # Process region with person-specific detector
                     results = self.pose_detectors[person_id].process(region)
-                    
+                    all_results.append(results)
+
                     if results.pose_landmarks:
                         # Extract and send metrics for this person
                         landmarks = results.pose_landmarks.landmark
-                        
+
                         # Adjust landmark coordinates to full frame
                         region_width = x2 - x1
                         region_height = y2 - y1
                         for landmark in landmarks:
                             landmark.x = (landmark.x * region_width + x1) / frame.shape[1]
                             landmark.y = (landmark.y * region_height + y1) / frame.shape[0]
-                        
+
                         metrics = self.calculate_metrics(landmarks, person_id)
                         self.send_osc_messages(metrics, person_id)
-                        
+
                         self.tracking_active[person_id] = True
                         num_people_tracked += 1
-                        
+
                         # Draw visualization
                         if show_preview:
                             frame = self.draw_overlay(frame, results.pose_landmarks, metrics, person_id)
@@ -329,31 +442,50 @@ class MovementTracker:
                         if self.tracking_active[person_id]:
                             self.send_tracking_lost(person_id)
                             self.tracking_active[person_id] = False
-                
+
+                # ------ Segmentation mask output ------
+                if self.enable_segmentation:
+                    mask = self._process_segmentation(all_results)
+                    self._write_mask(mask)
+                    self.frame_counter += 1
+
+                    # Send mask-active flag via OSC so TD knows mask is streaming
+                    try:
+                        self.osc_client.send_message("/movement/mask_active", 1.0)
+                    except Exception:
+                        pass
+
                 # Send global statistics
                 self.send_global_stats(num_people_tracked)
-                
+
                 # Calculate FPS
                 frame_time = time.time() - frame_start
                 self.calculate_fps(frame_time)
-                
+
                 # Draw global info overlay
                 if show_preview:
                     y_offset = 30
                     info_lines = [
                         f"FPS: {self.fps:.1f}",
                         f"People Tracked: {num_people_tracked}/{self.max_people}",
+                        f"Segmentation: {seg_status}",
                         f"Mode: Multi-Person"
                     ]
-                    
+
                     for i, line in enumerate(info_lines):
                         cv2.putText(frame, line, (10, y_offset + i * 30),
                                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-                    
+
+                    # Show mask preview in corner
+                    if self.enable_segmentation and mask is not None:
+                        mask_preview = cv2.resize(mask, (160, 120))
+                        mask_bgr = cv2.cvtColor(mask_preview, cv2.COLOR_GRAY2BGR)
+                        frame[10:130, frame.shape[1]-170:frame.shape[1]-10] = mask_bgr
+
                     cv2.imshow('Movement Tracking (Multi-Person)', frame)
                     if cv2.waitKey(5) & 0xFF == 27:  # ESC key
                         break
-                
+
         except KeyboardInterrupt:
             print("\nStopping tracker...")
         finally:
@@ -365,11 +497,32 @@ class MovementTracker:
         cv2.destroyAllWindows()
         for detector in self.pose_detectors:
             detector.close()
+        # Close mmap
+        if self.mask_mmap is not None:
+            self.mask_mmap.close()
+        if self.mask_fh is not None:
+            self.mask_fh.close()
         print("Movement tracker stopped")
 
 
 if __name__ == "__main__":
-    # Run tracker with preview window
-    # max_people: 1-4 (default 2 for typical DJ setup with guest)
-    tracker = MovementTracker(max_people=2)
-    tracker.run(show_preview=True)
+    import argparse
+    parser = argparse.ArgumentParser(description="DJ Sam Movement Tracker + Body Segmentation")
+    parser.add_argument("--max-people", type=int, default=2, help="Max people to track (1-4)")
+    parser.add_argument("--camera", type=int, default=0, help="Camera device index")
+    parser.add_argument("--no-preview", action="store_true", help="Disable preview window")
+    parser.add_argument("--no-segmentation", action="store_true", help="Disable body segmentation mask")
+    parser.add_argument("--osc-ip", default="127.0.0.1", help="OSC target IP")
+    parser.add_argument("--osc-port", type=int, default=7000, help="OSC target port")
+    args = parser.parse_args()
+
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+
+    tracker = MovementTracker(
+        max_people=args.max_people,
+        camera_id=args.camera,
+        enable_segmentation=not args.no_segmentation,
+        osc_ip=args.osc_ip,
+        osc_port=args.osc_port,
+    )
+    tracker.run(show_preview=not args.no_preview)
