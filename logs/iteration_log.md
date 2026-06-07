@@ -129,3 +129,33 @@ untouched so the change stays minimal and reviewable.
   in `_process_segmentation`.
 
 ---
+
+## 2026-06-07 — Sort-out session (sort what's left, fix it)
+
+Session goal: Thomas at the desk, stuck — render-diag reports `camera_in: MISSING / burst_flash: MISSING / output: MISSING`, audio reads `bass=0.0001`. He's on `feat/td-network-v2-builder` and unsure what's canonical vs WIP.
+
+### What I found
+
+- **`feat/td-network-v2-builder` is a strict superset of `feat/edge-confined-outline-2026-06-05`** (Phase 1). v2-builder branches FROM Phase 1's tip `f779965` and adds: programmatic network builder, GLSL slot growth, GLSL-input-1/2 black wiring, **audio default 1824c→BlackHole fix** (`ba3971e`+`bb65cdc`), 1280x720 mask scaling, 0-indexed `uniname{i}/value{i}x` binding fix (`0a1f2db`). PR #1 is now obsolete; PR #2 is canonical.
+- **The "MISSING" alarm was a stale-diagnostic false positive.** `_diag_aura.py` and `_diag_render_chain.py` both checked for **v1 operator names** (`burst_flash`, `noise_embers`, `flame_layers`, `camera_in`, `output`, `motion_energy_top`, `audio_energy_top`, …) that no longer exist in v2. The v2 chain is `body_mask_top → edge_detect → edge_blur → fire_aura_glsl ⇄ lightning_glsl → visual_switch → bloom_blur → bloom_post → final_composite (Null TOP) → syphonOut1`. `camera_in` is **intentionally absent** in v2 — OBS owns the webcam source (see `build_network_v2.py` line ~395 comment).
+- **`dj_visuals.toe` is 311010 bytes** — matches the canonical 311KB, not the corrupted 21KB regression.
+- **Uncommitted change** to `segmentation_mask_reader.py` was a pure LF→CRLF line-ending rewrite (no content diff with `-w`). Almost certainly TD itself rewrote it on save. Reverted.
+
+### What I fixed
+
+- Reverted line-ending noise on `segmentation_mask_reader.py`.
+- Updated `_diag_aura.py` and `_diag_render_chain.py` to the v2 op set so the diagnostic stops crying wolf.
+
+### What's left for desk
+
+- Open `dj_visuals.toe`, verify operators match the v2 chain above. If the .toe predates the v2 builder, run `build_network_v2.py` from a TD textport against a fresh `/project1` to materialize the v2 ops.
+- Watch the textport for `[AUDIO-FIX] device set to ... 1824c` on load — this is the fix for the `bass=0.0001` reading (BlackHole has no Serato signal; 1824c inputs 1-2 do).
+- Run `_diag_aura.py` again — should now report ALL CLEAN (or only show real errors).
+- F1 Perform Mode for framerate.
+
+### Hard rules respected
+
+- `dj_visuals.toe` NOT touched.
+- OBS NOT touched ("New Radio DJ Scene" is sacred).
+- No merge — verification still owed at the desk.
+
