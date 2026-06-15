@@ -202,16 +202,6 @@ void main()
     // Re-sample edge mask with distorted UVs
     float edge = texture(sTD2DInputs[0], distortUV).r;
 
-    // ---- FALLBACK: no body mask → full-frame ambient fire for standalone testing ----
-    // Samples a few pixels; if all black, body_mask_top has no silhouette (no person/mediapipe).
-    // In that case, use a soft radial gradient so audio-reactive fire is still visible.
-    float maskPresence = max(texture(sTD2DInputs[0], vec2(0.5, 0.5)).r,
-                             texture(sTD2DInputs[0], vec2(0.25, 0.25)).r);
-    if (maskPresence < 0.01) {
-        float radial = 1.0 - smoothstep(0.0, 0.8, length(uv - vec2(0.5)));
-        edge = radial * clamp(0.25 + flameInt * 0.6, 0.2, 1.0);
-    }
-
     // ---- Fire noise layers ----
     // Layer 1: Large-scale flame shape (slow, organic)
     float flame1 = fbm(vec3(
