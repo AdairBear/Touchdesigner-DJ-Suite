@@ -1,0 +1,12 @@
+{
+    "_comment": "Selects the active body-outline shader. movement_tracker.py reads this file ~1x/sec and broadcasts it on OSC so TouchDesigner can switch shaders live. Edit 'mode' and save — no tracker restart needed. See docs/setup/visual_mode_toggle.md.",
+    "mode": "flame",
+    "modes": {
+        "flame": 0,
+        "lightning": 1
+    },
+    "osc": {
+        "index_address": "/visual/mode",
+        "name_address": "/visual/mode_name"
+    }
+}
