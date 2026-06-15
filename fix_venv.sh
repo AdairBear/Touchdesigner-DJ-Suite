@@ -9,7 +9,7 @@
 set -e
 cd "$(dirname "$0")"
 
-echo "=== DJ SAM — venv rebuild ==="
+echo "=== Touchdesigner DJ Suite — venv rebuild ==="
 echo "Project root: $(pwd)"
 echo ""
 

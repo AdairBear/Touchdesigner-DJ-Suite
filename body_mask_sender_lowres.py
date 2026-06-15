@@ -113,7 +113,7 @@ def run(camera_id=0, show_preview=True, send_osc=True, osc_port=7000):
                 fps_smooth = 0.9 * fps_smooth + 0.1 * (1.0 / max(dt, 0.001))
                 cv2.putText(display, f'FPS: {fps_smooth:.0f} Mask: {"YES" if results.segmentation_mask is not None else "NO"}',
                             (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-                cv2.imshow('DJ Sam Body Segmentation', display)
+                cv2.imshow('Touchdesigner DJ Suite — Body Segmentation', display)
                 key = cv2.waitKey(1) & 0xFF
                 if key == ord('q'):
                     break

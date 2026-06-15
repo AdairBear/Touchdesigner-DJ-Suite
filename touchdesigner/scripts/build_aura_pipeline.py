@@ -23,7 +23,7 @@ def ensure_op(path, optype):
 
 
 print("=" * 60)
-print("  DJ SAM — Fire Body Aura Pipeline Builder")
+print("  Touchdesigner DJ Suite — Fire Body Aura Pipeline Builder")
 print("=" * 60)
 
 # ============================================================

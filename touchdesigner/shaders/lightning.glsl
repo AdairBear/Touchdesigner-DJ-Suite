@@ -1,6 +1,6 @@
 // lightning.glsl — GLSL TOP Pixel Shader
 // ==========================================
-// Electric LIGHTNING look for DJ Sam body OUTLINE (net-new, Phase 1D).
+// Electric LIGHTNING look for Touchdesigner DJ Suite body OUTLINE (net-new, Phase 1D).
 // Sharp blue/white filaments that ride the silhouette contour and flicker on
 // audio onsets. Companion to fire_aura.glsl — same input/uniform contract, so
 // switching looks is just choosing which GLSL TOP is cooked (see

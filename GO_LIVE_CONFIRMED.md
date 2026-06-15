@@ -1,4 +1,4 @@
-# GO_LIVE_CONFIRMED — DJ SAM TouchDesigner Suite
+# GO_LIVE_CONFIRMED — Touchdesigner DJ Suite
 ## Friday 2026-04-24 — Automated Friday Session Audit
 **Run by:** Scheduled task (no user present)
 **Audit time:** 2026-04-24 (morning)

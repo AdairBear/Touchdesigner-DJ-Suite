@@ -81,8 +81,8 @@ A living master catalog of all active, planned, and completed projects. Updated 
 
 ---
 
-### 3. DJ SAM
-**Codename**: `djsam`
+### 3. Touchdesigner DJ Suite
+**Codename**: `td-dj-suite`
 **Category**: Creative / Live performance AV system
 **Status**: Active
 **Stage**: Testing
@@ -168,7 +168,7 @@ A living master catalog of all active, planned, and completed projects. Updated 
 
 **Next action**: Consolidate all components into one `open-orchestra` repo; then scaffold JUCE plugin
 
-**Connected projects**: DJ SAM (Phase 4 AV bridge), Jungle MIDI Forge (can connect but stays standalone), TouchOSC Integration Layer
+**Connected projects**: Touchdesigner DJ Suite (Phase 4 AV bridge), Jungle MIDI Forge (can connect but stays standalone), TouchOSC Integration Layer
 
 ---
 
@@ -316,12 +316,12 @@ A living master catalog of all active, planned, and completed projects. Updated 
 **Status**: Planned
 **Stage**: Concept
 
-**What it is**: A touchscreen control surface layer using TouchOSC (phone/tablet → OSC over WiFi) for manual override control during live performance. Relevant to both DJ SAM and Open Orchestra.
+**What it is**: A touchscreen control surface layer using TouchOSC (phone/tablet → OSC over WiFi) for manual override control during live performance. Relevant to both Touchdesigner DJ Suite and Open Orchestra.
 
-**For DJ SAM**: Faders for aura intensity, buttons for OBS scene switches, toggles for Twist SOP. Zero integration work — just add another OSC In CHOP.
+**For Touchdesigner DJ Suite**: Faders for aura intensity, buttons for OBS scene switches, toggles for Twist SOP. Zero integration work — just add another OSC In CHOP.
 **For Open Orchestra**: Potentially each performer gets their own control surface.
 
-**Next action**: Build post DJ SAM Friday completion
+**Next action**: Build post Touchdesigner DJ Suite Friday completion
 
 ---
 

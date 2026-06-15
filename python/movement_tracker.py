@@ -655,7 +655,7 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="DJ Sam Movement Tracker + Body Segmentation"
+        description="Touchdesigner DJ Suite Movement Tracker + Body Segmentation"
     )
     parser.add_argument(
         "--max-people", type=int, default=2, help="Max people to track (1-4)"

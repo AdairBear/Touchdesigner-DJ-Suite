@@ -1,5 +1,5 @@
 #!/bin/bash
-# DJ Sam body tracker launcher
+# Touchdesigner DJ Suite body tracker launcher
 # Launches movement_tracker.py from the project venv.
 # Terminal has camera permission on this Mac; Python inherits it from Terminal.
 #

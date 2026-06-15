@@ -1,4 +1,4 @@
-# TouchDesigner Body Aura Build Guide — DJ Sam Fire Effect
+# TouchDesigner Body Aura Build Guide — TD-DJ-Suite Fire Effect
 
 Node-by-node build guide for the fiery body aura effect. Thomas is the focal point — the aura wraps around his body silhouette, not the whole scene.
 
