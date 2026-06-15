@@ -32,13 +32,14 @@ import struct
 MASK_PATH = "/tmp/djsam_bodymask.raw"
 MASK_W = 640
 MASK_H = 480
-HEADER_SIZE = 4   # 4B frame_counter (uint32, little-endian)
+HEADER_SIZE = 4  # 4B frame_counter (uint32, little-endian)
 TOTAL_SIZE = HEADER_SIZE + MASK_W * MASK_H
 
 # Module-level mmap handle (persists across cook calls)
 _fh = None
 _mm = None
 _last_frame = -1
+_last_rgba = None  # cached output — always output something, never return bare
 
 
 def _open_mmap():
@@ -59,11 +60,11 @@ def _open_mmap():
         _mm = None
         return False
     try:
-        _fh = open(MASK_PATH, 'r+b')
+        _fh = open(MASK_PATH, "r+b")
         _mm = mmap.mmap(_fh.fileno(), TOTAL_SIZE, access=mmap.ACCESS_READ)
         return True
     except Exception as e:
-        print('[segmentation_mask_reader] mmap open error: ' + str(e))
+        print("[segmentation_mask_reader] mmap open error: " + str(e))
         _fh = None
         _mm = None
         return False
@@ -73,45 +74,37 @@ def cook(scriptOP):
     """Called every frame by the Script TOP.
     Reads the mmap mask and writes it into the TOP's pixel buffer.
     """
-    global _mm, _last_frame
+    global _mm, _last_frame, _last_rgba
 
     # Open mmap if not yet open
     if _mm is None:
         if not _open_mmap():
-            # No mask file yet -- output black
-            scriptOP.copyNumpyArray(
-                np.zeros((MASK_H, MASK_W, 4), dtype=np.float32)
-            )
+            # No mask file yet -- output black and keep trying
+            scriptOP.copyNumpyArray(np.zeros((MASK_H, MASK_W, 4), dtype=np.float32))
             return
 
     try:
         _mm.seek(0)
         header = _mm.read(HEADER_SIZE)
-        frame_num = struct.unpack('<I', header[0:4])[0]
+        frame_num = struct.unpack("<I", header[0:4])[0]
 
-        # Skip if same frame (save GPU upload)
-        if frame_num == _last_frame:
-            return
-        _last_frame = frame_num
+        if frame_num != _last_frame or _last_rgba is None:
+            _last_frame = frame_num
+            raw = _mm.read(MASK_W * MASK_H)
+            mask = np.frombuffer(raw, dtype=np.uint8).reshape((MASK_H, MASK_W))
+            mask_f = mask.astype(np.float32) / 255.0
+            _last_rgba = np.zeros((MASK_H, MASK_W, 4), dtype=np.float32)
+            _last_rgba[:, :, 0] = mask_f
+            _last_rgba[:, :, 1] = mask_f
+            _last_rgba[:, :, 2] = mask_f
+            _last_rgba[:, :, 3] = mask_f
 
-        # Read mask body
-        raw = _mm.read(MASK_W * MASK_H)
-        mask = np.frombuffer(raw, dtype=np.uint8).reshape((MASK_H, MASK_W))
-
-        # Convert to float32 RGBA for Script TOP
-        # Mask goes into all channels so downstream TOPs can sample any channel
-        mask_f = mask.astype(np.float32) / 255.0
-        rgba = np.zeros((MASK_H, MASK_W, 4), dtype=np.float32)
-        rgba[:, :, 0] = mask_f   # R
-        rgba[:, :, 1] = mask_f   # G
-        rgba[:, :, 2] = mask_f   # B
-        rgba[:, :, 3] = mask_f   # A
-
-        scriptOP.copyNumpyArray(rgba)
+        # Always output — returning without copyNumpyArray blacks out the TOP
+        scriptOP.copyNumpyArray(_last_rgba)
 
     except Exception as e:
-        print('[segmentation_mask_reader] read error: ' + str(e))
-        # Try to reopen next frame
+        print("[segmentation_mask_reader] read error: " + str(e))
+        _last_rgba = None
         _open_mmap()
 
 
@@ -119,5 +112,13 @@ def setup(scriptOP):
     """Called once when the Script TOP is created or script is modified."""
     scriptOP.par.resolutionw = MASK_W
     scriptOP.par.resolutionh = MASK_H
-    print('[segmentation_mask_reader] Expecting mask at ' + MASK_PATH + ' (' + str(MASK_W) + 'x' + str(MASK_H) + ')')
+    print(
+        "[segmentation_mask_reader] Expecting mask at "
+        + MASK_PATH
+        + " ("
+        + str(MASK_W)
+        + "x"
+        + str(MASK_H)
+        + ")"
+    )
     _open_mmap()
