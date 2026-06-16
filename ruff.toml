@@ -1,0 +1,26 @@
+# Per-repo neutralizer for the global ruff PostToolUse hook.
+#
+# Context (2026-06-15 prep session): the user's global Claude Code config
+# (~/.claude/settings.json) registers a PostToolUse hook running
+# `ruff check --fix` + `ruff format` on every edited .py file
+# (~/.claude/scripts/ruff-posttooluse.py). `ruff format` is a black-compatible
+# whole-file reformatter. In this repo, TouchDesigner's CRLF-on-save plus
+# whole-file reformatting were producing CRLF-flips + style churn that buried
+# real semantic diffs.
+#
+# Claude Code has NO per-repo single-hook opt-out: hooks merge additively
+# across user/project/local settings and "there is no way to disable an
+# individual hook while keeping it in the configuration"
+# (code.claude.com/docs/en/hooks). So instead of disabling the hook, we
+# neutralize what it runs: ruff itself is configured to skip every file here.
+#
+# `force-exclude = true` makes ruff honor the exclude list even for paths
+# passed explicitly on the command line (which is how the hook invokes it).
+# `extend-exclude = ["*.py"]` then excludes all Python files in this repo.
+# Net effect: the hook still fires, but `ruff check`/`ruff format` no-op on
+# every file. All other Claude Code hooks (carl, jcodemunch reindex, gsd,
+# session/precompact) remain active. Manual `ruff` runs in this repo also
+# no-op by design — remove or scope this file if you later want linting here.
+
+force-exclude = true
+extend-exclude = ["*.py"]
