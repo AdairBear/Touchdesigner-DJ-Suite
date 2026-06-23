@@ -20,11 +20,15 @@ KICK_SCENE_THRESHOLD  = 0.90    # kick_onset must exceed this to trigger scene s
 KICK_FRAMES_REQUIRED  = 3       # consecutive frames above threshold before switching
 SCENE_COOLDOWN_SEC    = 8.0     # minimum seconds between scene switches
 
-# Scene names — match exactly what's in OBS (case-sensitive)
+# Scene names — match exactly what's in OBS (case-sensitive).
+# SACRED RULE: never reference or switch TO "New Radio DJ Scene" — that is the
+# production stream scene and must never be touched programmatically.
+# These names correspond to the Phase 1+ layer architecture.
+# Create matching scenes in OBS before enabling this switcher in a live set.
 SCENES = {
-    'drop':   'Drop Scene',
-    'build':  'Build Scene',
-    'normal': 'Main Scene',
+    'drop':   'Layer 0 — Drop',      # heavy-drop visual state (create in OBS)
+    'build':  'Layer 0 — Build',     # build-up visual state (create in OBS)
+    'normal': 'Layer 0 — Baseline',  # default / main TD visual scene
 }
 
 # State
