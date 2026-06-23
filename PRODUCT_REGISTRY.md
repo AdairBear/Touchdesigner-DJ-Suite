@@ -92,25 +92,23 @@ A living master catalog of all active, planned, and completed projects. Updated 
 **What's working**:
 - Python movement tracker (MediaPipe pose detection → OSC on localhost:7000)
 - Multi-person tracking (1-4 people, color-coded)
-- Body segmentation mask via mmap
-- Audio chain (PreSonus Studio 1824c detected, bass/mid/high values arriving)
-- Fire aura GLSL shader (10 parameterized uniforms)
-- OBS automation (obs-websocket-py)
-- Test suite (45 tests)
+- Body segmentation mask via mmap + edge-confined contour extraction
+- Audio chain (PreSonus Studio 1824c, bass/mid/high uniforms wired via aura_compositor.py)
+- Fire aura + lightning GLSL shaders (10 uniforms, 0-indexed, audio-reactive)
+- flame↔lightning OSC toggle via `/visual/mode` + `configs/visual_mode.json`
+- v2 network builder (`build_network_v2.py`) — reproducible TD chain from code
+- Test suite (71 passed, 20 skipped)
 
-**What's left**:
-- [ ] **Thursday 2026-04-23 16:00**: Scripting session (scheduled) — writes all CHOP scripts, normalization, beat detection, transient router, geometry instancing, procedural animation, OBS WebSocket TD integration
-- [ ] **Friday 2026-04-24 12:00**: Testing session (scheduled) — wires everything live, full system test
-- [ ] Venv rebuild (corrupted hardcoded paths)
-- [ ] Math CHOP normalization (MediaPipe raw -0.30 to 1.20 → 0.0 to 1.0)
-- [ ] madmomTD (ioannismihailidis/madmomTD) — AI beat detection for 160+ BPM syncopated patterns
-- [ ] Breakbeat transient routing: Kick → Twist SOP, Snare → Noise TOP, Bass → LFO CHOP
-- [ ] Geometry instancing pipeline: Tube SOP → Twist → SOP to CHOP → CHOP to TOP (RGB, Fit to Square) → Geometry COMP
-- [ ] Procedural animation: Swell (LFO → scale), Pulse (Noise → position), Flip (Kick → 180° orientation)
-- [ ] OBS double-image fix (suspected duplicate Syphon source)
-- [ ] TouchOSC manual override layer (v2 feature, post-Friday)
+**What's left (desk verification — branch `feat/td-network-v2-builder`, PR #2)**:
+- [ ] Run `build_network_v2.py` in TD Textport; verify full chain appears in /project1
+- [ ] Confirm contour is a thin line (0.3–2% of frame), not a blob
+- [ ] Confirm flame rides the contour (not a body-covering haze)
+- [ ] Confirm flame↔lightning toggle works via `configs/visual_mode.json`
+- [ ] Confirm audio uniforms (value0x–value9x) arrive at GLSL TOP under music
+- [ ] Confirm Syphon→OBS output + Perform Mode 30–60 fps
+- [ ] Merge PR #2 to main once all 6 pass
 
-**Next action**: Thursday 4PM scripting session (scheduled — no action needed)
+**Next action**: Desk verification — open `dj_visuals.toe`, follow `docs/setup/desk_session_v2.md`
 
 **Connected projects**: Open Orchestra (TouchOSC is relevant to both)
 
