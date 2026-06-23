@@ -29,7 +29,7 @@ class TestSystemLauncherInit:
 class TestDependencyChecking:
     """Test dependency checking functionality"""
     
-    @patch('system_launcher.__import__')
+    @patch('builtins.__import__')
     def test_check_dependencies_all_present(self, mock_import):
         """Test when all dependencies are present"""
         launcher = SystemLauncher()
@@ -41,7 +41,7 @@ class TestDependencyChecking:
         
         assert result is True
     
-    @patch('system_launcher.__import__')
+    @patch('builtins.__import__')
     def test_check_dependencies_missing(self, mock_import):
         """Test when dependencies are missing"""
         launcher = SystemLauncher()
@@ -62,7 +62,7 @@ class TestDependencyChecking:
 class TestCameraCheck:
     """Test camera availability checking"""
     
-    @patch('system_launcher.cv2.VideoCapture')
+    @patch('cv2.VideoCapture')
     def test_check_camera_available(self, mock_capture):
         """Test when camera is available"""
         mock_cap = Mock()
@@ -75,7 +75,7 @@ class TestCameraCheck:
         assert result is True
         mock_cap.release.assert_called_once()
     
-    @patch('system_launcher.cv2.VideoCapture')
+    @patch('cv2.VideoCapture')
     def test_check_camera_unavailable(self, mock_capture):
         """Test when camera is not available"""
         mock_cap = Mock()

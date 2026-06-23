@@ -5,8 +5,11 @@ Run this after implementing the TouchDesigner side to verify all OSC commands wo
 Requires TouchDesigner project running with generative OSC receivers configured.
 """
 
+import pytest
 import time
 from pythonosc import udp_client
+
+pytestmark = pytest.mark.skip(reason="integration test — requires live TouchDesigner OSC server")
 
 OSC_IP = "127.0.0.1"
 OSC_PORT = 7000
