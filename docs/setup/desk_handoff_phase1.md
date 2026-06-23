@@ -1,7 +1,14 @@
 # Desk Handoff — Phase 1 Validation
 
+> **Updated 2026-06-23:** The active branch is now `feat/td-network-v2-builder`,
+> which supersedes `feat/edge-confined-outline-2026-06-05`. The v2 network builder
+> (`build_network_v2.py`) automates all TD wiring — Step 4 (lightning toggle) and
+> the operator chain are now built programmatically rather than by hand.
+> For a clean start, use `docs/setup/desk_session_v2.md` instead of this doc.
+> This doc is kept for historical reference.
+
 Everything in Phase 1 that can be done without you at the desk is **done and on
-the branch** `feat/edge-confined-outline-2026-06-05`. This checklist is the part
+the branch** `feat/td-network-v2-builder`. This checklist is the part
 that needs **you, at the desk, with TouchDesigner + OBS open**. Work top to
 bottom; each step says what to do and what "good" looks like.
 
@@ -11,7 +18,7 @@ Source of truth for the why: `docs/audits/baseline_outline_audit_2026-06-05.md`.
 
 ## 0. Before you start
 
-- [ ] Pull the branch: `git checkout feat/edge-confined-outline-2026-06-05 && git pull`
+- [ ] Pull the branch: `git checkout feat/td-network-v2-builder && git pull`
 - [ ] Activate the venv: `source venv/bin/activate`
 - [ ] Confirm tests still pass on your machine:
       `pytest tests/test_edge_outline.py tests/test_visual_mode.py -v`

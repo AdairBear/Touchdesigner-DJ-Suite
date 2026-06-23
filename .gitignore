@@ -17,6 +17,9 @@ htmlcov/
 dist/
 build/
 
+# Claude Code internal state (session files, usage stats — not source)
+.claude/
+
 # VS Code
 .vscode/launch.json
 .vscode/*.log
