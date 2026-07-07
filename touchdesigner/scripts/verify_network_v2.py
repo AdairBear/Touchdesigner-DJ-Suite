@@ -687,8 +687,19 @@ def verify(ctx=None, base="/project1", context=None):
 # referenced, and it is guarded so a plain `import` (pytest) never fires it.
 # ----------------------------------------------------------------------------
 def _resolve(name):
-    """Return a TD global by name from the exec namespace, or None outside TD."""
-    return globals().get(name, None)
+    """Return a TD global by name, or None outside TD.
+
+    TouchDesigner injects op/project/absTime/run into BUILTINS, not into this
+    module's globals(), so a plain globals().get() misses them (the 2026-07-06
+    "probe never ran" bug: _IN_TD came back False at the desk even though bare
+    op() worked). Check the exec namespace first (for VERIFY_CONTEXT, set by the
+    user on the paste line), then builtins.
+    """
+    if name in globals():
+        return globals()[name]
+    import builtins
+
+    return getattr(builtins, name, None)
 
 
 def _td_context(context="initial"):
