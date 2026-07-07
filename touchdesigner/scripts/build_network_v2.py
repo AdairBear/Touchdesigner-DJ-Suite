@@ -424,6 +424,11 @@ def build():
         "then start movement_tracker.py."
     )
     _log('OBS: add a Syphon Client source -> "' + SYPHON_NAME + '".')
+    _log(
+        "VERIFY (read-back): exec(open('"
+        + os.path.join(SCRIPT_DIR, "verify_network_v2.py")
+        + "').read())"
+    )
 
 
 build()
