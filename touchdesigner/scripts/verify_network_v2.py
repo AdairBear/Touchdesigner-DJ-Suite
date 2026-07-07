@@ -703,13 +703,28 @@ def _resolve(name):
 
 
 def _td_context(context="initial"):
-    """Build a TDContext from the live TD globals (op, project, absTime, run)."""
-    op_fn = _resolve("op")
-    project_obj = _resolve("project")
-    abstime = _resolve("absTime")
+    """Build a TDContext by resolving TD names as BARE names at call time.
+
+    In TD's ``exec(open(f).read())`` context, op/project/absTime are reachable
+    only as bare names (via TD's own name resolution) — NOT via this frame's
+    globals() or builtins (both the 2026-07-06 globals() and builtins fixes
+    missed them). A bare reference inside this function resolves exactly the way
+    the build script's bare op() does. Each is guarded so import stays inert.
+    """
+    try:
+        op_fn = op  # noqa: F821  (TD-provided)
+    except NameError:
+        op_fn = None
+    try:
+        project_obj = project  # noqa: F821
+    except NameError:
+        project_obj = None
     now_fn = None
-    if abstime is not None:
-        now_fn = lambda: abstime.seconds  # noqa: E731
+    try:
+        _abs = absTime  # noqa: F821
+        now_fn = lambda: _abs.seconds  # noqa: E731
+    except NameError:
+        pass
     # Persistent cross-paste storage lives on the base COMP's .storage dict.
     storage = {}
     if op_fn is not None:
@@ -727,8 +742,18 @@ def _td_context(context="initial"):
     )
 
 
-# `op` is a TD builtin injected into the exec namespace; absent under `import`.
-_IN_TD = _resolve("op") is not None
+# Auto-run only inside TD. `op` resolves as a bare name there (as the build
+# script proves); under a plain `import` it raises NameError -> stays inert.
+try:
+    op  # noqa: F821
+    _IN_TD = True
+except NameError:
+    _IN_TD = False
 
 if _IN_TD:
-    verify(context=_resolve("VERIFY_CONTEXT") or "initial")
+    _ctx_label = "initial"
+    try:
+        _ctx_label = VERIFY_CONTEXT or "initial"  # noqa: F821 (set on paste line)
+    except NameError:
+        pass
+    verify(context=_ctx_label)
