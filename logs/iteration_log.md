@@ -159,3 +159,48 @@ Session goal: Thomas at the desk, stuck — render-diag reports `camera_in: MISS
 - OBS NOT touched ("New Radio DJ Scene" is sacred).
 - No merge — verification still owed at the desk.
 
+
+---
+
+## Iteration (PLAN-01) — 2026-07-06 — Read-back probe: pre-filled desk-run blocks
+
+The verification loop is now instrumented. `verify_network_v2.py` runs inside TD
+and writes `logs/verify_report_<timestamp>.json` (agent-readable) + a Textport
+table. Fill one block per probe paste. Paste the JSON filename into the next
+Claude session if you stop mid-run — see `docs/setup/desk_session_v2.md` (tiers
+A–D) and `VERIFICATION.md` for the protocol.
+
+### Tier A.1 — initial probe (post-build)
+- Probe JSON file: `logs/verify_report_________________.json`
+- RESULT line: PASS / FAIL (____ failed: __________)
+- ops_exist: PASS / FAIL — missing: __________
+- wiring: PASS / FAIL — mismatches: __________
+- glsl_bindings:fire_aura_glsl: PASS / FAIL
+- glsl_bindings:lightning_glsl: PASS / FAIL
+- Notes: ______________________________________________
+
+### Tier A.2 — post-reload probe (Cmd+S → close → reopen)  ← the April killer
+- Probe JSON file (context=post_reload): `logs/verify_report_________________.json`
+- glsl_bindings STILL PASS after reload? YES / NO
+- If NO: which uniname slots went empty/shifted? __________
+- Notes: ______________________________________________
+
+### Tier B — mask alive (tracker running)
+- Probe JSON file: `logs/verify_report_________________.json`
+- Tracker contour px / % of 640x480: ______ / ______%  (thin 0.3–2% / blob >10%)
+- mask_alive: PASS / WARN (peak=______)
+- body_mask_top visual: outline / blob
+- Notes: ______________________________________________
+
+### Tier C — live uniforms + toggle (music on, two pastes ≥5s apart)
+- Phase-2 JSON file: `logs/verify_report_________________.json`
+- uniforms_alive: PASS / WARN — audio slots moved: ____/9, gap ____s
+- uTime slot 9 moved? YES / NO (NO is normal on pure v2 build)
+- flame↔lightning toggle switches within ~1s? YES / NO
+- Bloom/haze tuning changed (if any): __________  (→ PLAN-02 knobs once landed)
+- Notes: ______________________________________________
+
+### Tier D — Syphon → OBS + Perform Mode
+- Overlay visible in OBS (new dev scene, NOT "New Radio DJ Scene")? YES / NO
+- Perform-Mode (F1) FPS: ______ fps  (editor project.cookRate was ______)
+- Notes: ______________________________________________

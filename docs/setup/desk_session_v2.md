@@ -1,11 +1,22 @@
-# TD-DJ-Suite — Desk Session Guide (v2 Network)
+# TD-DJ-Suite — Desk Session Guide (v2 Network, probe-driven)
 
 > Branch: `feat/td-network-v2-builder`
-> Last updated: 2026-06-23
+> Last updated: 2026-07-06 (PLAN-01: restructured around the read-back probe)
 
-This is the current session guide for verifying the v2 TD network end-to-end.
-The v2 builder (`touchdesigner/scripts/build_network_v2.py`) creates the full
-operator chain programmatically — no manual wiring needed.
+This guide is now built around `verify_network_v2.py` — a **read-only probe**
+that runs *inside* TouchDesigner, measures the actual network state, and writes
+a machine-readable report to `logs/verify_report_<timestamp>.json` plus a
+PASS/FAIL/WARN table to the Textport. The probe does the measuring that used to
+take ~60 min of manual clicking; your remaining job is the ~10 min of aesthetic
+judgment a machine can't make.
+
+**Every tier is independently valuable and ≤15 min.** If you stop after any
+tier, note the newest `logs/verify_report_*.json` filename and paste it into the
+next Claude session — that JSON is all a fresh session needs to know exactly
+which of the six desk items passed, without asking you anything.
+
+The probe is **read-only** — it never sets a parameter. It cannot fix anything;
+it only tells you (and the next agent) the truth about what TD is doing.
 
 ---
 
@@ -14,159 +25,130 @@ operator chain programmatically — no manual wiring needed.
 ```bash
 git checkout feat/td-network-v2-builder && git pull
 source venv/bin/activate
-pytest tests/test_edge_outline.py tests/test_visual_mode.py -v
-# Expect: 18 passed
+pytest tests/test_edge_outline.py tests/test_visual_mode.py tests/test_verify_network_v2.py -v
+# Expect: all passed (offline probe logic verified)
 ```
 
 ---
 
-## Step 0 — Build the v2 network in TD Textport
+## Tier A — Build + reload persistence (5 min, no camera/music)
 
-This replaces all manual wiring from the old Phase 1 guide.
+*This tier alone settles the two historical killers: 0-indexed GLSL bindings
+and bindings evaporating on `.toe` reload (what killed the April go-live).*
 
-1. Open **`dj_visuals.toe`** (311 KB at repo root — this is the canonical file).
+1. Open **`dj_visuals.toe`** (repo root — the canonical file).
 2. Open the Textport: **Alt+T**.
-3. Verify `REPO_ROOT` at the top of `build_network_v2.py` matches your machine:
+3. Confirm `REPO_ROOT` at the top of `build_network_v2.py` matches this machine:
    `/Users/thomasadair/projects/touchdesigner-dj-suite`
-4. Run the builder — paste this in the Textport and press Enter:
-
+4. **Build** — paste and press Enter:
    ```python
    exec(open('/Users/thomasadair/projects/touchdesigner-dj-suite/touchdesigner/scripts/build_network_v2.py').read())
    ```
+   Expected final lines: `[build_v2] === build complete ===` then a
+   `[build_v2] VERIFY (read-back): …` line with the probe one-liner.
+5. **Probe** — paste:
+   ```python
+   exec(open('/Users/thomasadair/projects/touchdesigner-dj-suite/touchdesigner/scripts/verify_network_v2.py').read())
+   ```
+   Read the table. `ops_exist`, `wiring`, and both `glsl_bindings:*` rows should
+   be **PASS**. The probe prints the JSON path — that file is the deliverable.
+6. **Reload persistence test** (the April killer, finally measured):
+   - **Cmd+S**, then **File → Close**, then reopen `dj_visuals.toe`.
+   - Paste, marking the context so the report is labelled `post_reload`:
+     ```python
+     VERIFY_CONTEXT='post_reload'; exec(open('/Users/thomasadair/projects/touchdesigner-dj-suite/touchdesigner/scripts/verify_network_v2.py').read())
+     ```
+   - **PASS condition:** both `glsl_bindings:*` rows still **PASS** after the
+     reload. If they FAIL now (uniname0 empty / off-by-one), the bindings did
+     not persist — that is the exact April failure, now caught by a machine.
 
-5. Watch the Textport log. Each operator prints as it is created or reused.
-   Expected final line: `[build_v2] === build complete ===`
-6. The full chain will appear under `/project1`:
-   ```
-   segmentation_mask_reader (Text DAT)
-   body_mask_top (Script TOP, 640×480)
-     → edge_detect (Edge TOP, upscale to 1280×720)
-     → edge_blur (Blur TOP)
-     → fire_aura_glsl (GLSL TOP)  ─┐
-     → lightning_glsl (GLSL TOP)  ─┤→ visual_switch (Switch TOP)
-   zero_src (Constant TOP, black) ─┘      ↓
-   oscin1 (OSC In CHOP, port 7000)   bloom_blur → bloom_post
-   audio_in (Audio Device In CHOP)        ↓
-   audio_spectrum (Audio Spectrum)   final_composite (Null TOP)
-   aura_compositor (Execute DAT)          ↓
-                                     syphonOut1 (Syphon/Spout Out TOP)
-   ```
+➡️ *Stop here? Note the two JSON filenames (initial + post_reload).*
 
 ---
 
-## Step 1 — Audio device: select PreSonus 1824c
+## Tier B — Mask is alive (5 min, tracker on)
 
-The one remaining manual touch after the build.
-
-- Click `audio_in` → Parameters → **Device** → select **PreSonus Studio 1824c**.
-- (The bootstrap in `aura_compositor.py` tries to auto-select 1824c, but it
-  may not fire until you verify it manually on first load.)
-
----
-
-## Step 2 — Confirm the contour is a thin line
-
-1. Start the tracker in a Terminal window:
+1. Start the tracker in a Terminal:
    ```bash
    source venv/bin/activate
    python python/movement_tracker.py --max-people 1
    ```
-2. Watch the Terminal log for lines like:
+   Watch for: `contour px=NNNN (0.8% of 640x480)` — **0.3%–2% = thin line ✓**,
+   **>10% = blob ✗** (something upstream re-filled the mask — stop and flag).
+2. Re-run the probe (plain one-liner). `mask_alive` should flip from WARN to
+   **PASS** (`body_mask_top` peak > 0) — the June-8 killer (black Script TOP with
+   a healthy mmap), finally measured.
+3. Eyeball `body_mask_top` in TD: a **silhouette outline**, not a filled body.
+
+➡️ *Stop here? Note the JSON filename.*
+
+---
+
+## Tier C — Live uniforms + look toggle (5 min, music on)
+
+1. Play music through the PreSonus 1824c chain (Serato master → inputs 1–2).
+2. **Live-uniform test (two pastes).** Paste the plain probe one-liner **twice,
+   ≥5 s apart**:
+   - 1st paste: `uniforms_alive` = **PENDING** (snapshot stored).
+   - 2nd paste: `uniforms_alive` computes per-slot deltas.
+   - **PASS:** nonzero deltas on the audio slots (0–8) → `aura_compositor` is
+     writing live uniforms. Silence → WARN (expected, not a failure).
+   - Slot map on `fire_aura_glsl`'s **Vectors** page (0-indexed, per-component):
+     | par | uniform |
+     |-----|---------|
+     | `value4x` | `uMotionEnergy` |
+     | `value5x` | `uBassEnergy` |
+     | `value6x` | `uMidEnergy` |
+     | `value7x` | `uHighEnergy` |
+     | `value9x` | `uTime` (shader-driven; static value9x is normal) |
+   - If audio slots stay at 0 with music playing: `aura_compositor` Execute DAT
+     may be inactive → check **Active = On, Frame Start = On**, and that
+     `audio_in` device is the 1824c (`audio_device` row on the probe).
+3. **Look toggle** — switch flame↔lightning via the config file:
+   ```bash
+   python -c "import json,pathlib; pathlib.Path('configs/visual_mode.json').write_text(json.dumps({'mode':'lightning'}))"
+   # ...and back:
+   python -c "import json,pathlib; pathlib.Path('configs/visual_mode.json').write_text(json.dumps({'mode':'flame'}))"
    ```
-   contour px=NNNN (0.8% of 640x480) — thin outline if low, blob if high
-   ```
-   - **Good:** 0.3%–2% of frame → thin line ✓
-   - **Bad:** >10% → blob still being emitted → stop and flag (something upstream re-filled the mask)
-3. In TD, look at `body_mask_top` — it should show a **silhouette outline**, not a filled body.
+   `visual_switch` index should change within ~1 s (the running tracker is the
+   OSC sender on port 7000). Eyeball: flame rides the contour and licks off it;
+   lightning replaces it cleanly.
+4. **Bloom / haze too strong?** (aesthetic judgment — probe can't do this):
+   drop `bloom_blur` `size` toward 1–2, or reduce `expansion`/`flameExpand` in
+   `fire_aura.glsl`. Note the change in `logs/iteration_log.md`.
+   *(Once PLAN-02 lands, tune these via `configs/visual_params.json` hot-reload
+   instead of editing GUI/GLSL by hand.)*
+
+➡️ *Stop here? Note the phase-2 JSON filename.*
 
 ---
 
-## Step 3 — Confirm flame rides the contour
+## Tier D — Syphon → OBS + Perform Mode FPS (5 min)
 
-- View `fire_aura_glsl` output.
-- **Good:** flame sits on/near the contour line and licks off it.
-- **If still a body-covering haze:** reduce bloom:
-  - In `bloom_blur`: drop `size` from 3 toward 1–2.
-  - In `fire_aura.glsl`: reduce `expansion` / `flameExpand` terms.
-  - Note what you changed in `logs/iteration_log.md`.
+1. In OBS, add a **Syphon Client** source pointing at sender name
+   **`TDSyphonSpoutOut`** — in a **new dev/scratch scene**.
+   **Never touch "New Radio DJ Scene" — it is sacred** (additive only).
+2. Confirm the outline overlay appears in the OBS preview.
+3. In TD press **F1** (Perform Mode). FPS should jump from ~7 (editor) to 30–60.
+   The probe's `fps` row reports `project.cookRate`, but editor cook rate is not
+   the delivered rate — read the real number in Perform Mode.
+4. Log the observed Perform-Mode FPS in `logs/iteration_log.md`.
 
----
-
-## Step 4 — Confirm flame↔lightning toggle
-
-The Switch TOP is wired to `/visual/mode` via `oscin1` — no manual wiring needed.
-
-**Test via config file:**
-
-```bash
-# Switch to lightning:
-python -c "
-import json, pathlib
-p = pathlib.Path('configs/visual_mode.json')
-p.write_text(json.dumps({'mode': 'lightning'}))
-print('set lightning')
-"
-
-# Switch back to flame:
-python -c "
-import json, pathlib
-p = pathlib.Path('configs/visual_mode.json')
-p.write_text(json.dumps({'mode': 'flame'}))
-print('set flame')
-"
-```
-
-Or use the movement tracker's OSC sender — it reads `configs/visual_mode.json`
-and emits `/visual/mode` 0.0 (flame) or 1.0 (lightning) on each poll cycle.
-
-- **Good:** visual_switch index changes within ~1s of writing the file.
-- **If no switch:** check OSC In CHOP `oscin1` is active on port 7000, and that
-  `movement_tracker.py` is running (it's the OSC sender).
+➡️ *Done. The newest `logs/verify_report_*.json` records items 1, 4, 5 and most
+of 2/6 as machine-checked; your notes cover the aesthetic calls.*
 
 ---
 
-## Step 5 — Confirm audio uniforms arrive at the GLSL TOP
+## What the probe measures (map to the old 6-item checklist)
 
-1. Play music through the PreSonus 1824c chain.
-2. In `fire_aura_glsl` Parameters → scroll to the custom **Vectors** page.
-3. Watch `value0x`–`value9x` — they should move with the audio.
-   - **value5x** = `uMotionEnergy` (motion-driven)
-   - **value5x** = `uBassEnergy` (bass)
-   - Expect values >0.01 when music is playing.
-4. If stuck at 0.0: `aura_compositor` Execute DAT may not be active. Verify:
-   - `aura_compositor` Parameters → **Active** = On, **Frame Start** = On.
-   - If the device wasn't 1824c, fix Step 1 and re-check.
-
----
-
-## Step 6 — Syphon → OBS + Perform Mode
-
-1. In OBS: add a **Syphon Client** source pointing at sender name
-   **`TDSyphonSpoutOut`**.
-2. Confirm the outline overlay appears in OBS preview (NOT "New Radio DJ Scene"
-   — add this to a new dev/scratch scene per the sacred-scene rule).
-3. In TD: press **F1** (Perform Mode). FPS should jump from ~7 (editor) to 30–60.
-4. Log the observed FPS in `logs/iteration_log.md`.
-
----
-
-## After the session — log your observations
-
-Add an entry to `logs/iteration_log.md`:
-
-```markdown
-## Iteration N — YYYY-MM-DD
-
-- Contour: thin / blob (px %, frame %)
-- Flame look: rides contour / hazes
-- Lightning toggle: works / needs fix
-- Audio uniforms: moving / stuck at 0
-- FPS in Perform Mode: N fps
-- OBS output: confirmed / not yet
-- Notes: ...
-```
-
-Then report back — I'll take the next step based on what you observed.
+| Old desk item | Probe check(s) | Human still judges |
+|---|---|---|
+| 1. GLSL bindings + **persistence** | `glsl_bindings:*` (init + `post_reload`) | — |
+| 2. Audio device / uniforms arrive | `audio_device`, `uniforms_alive` | music actually audible |
+| 3. Mask not black | `mask_alive` | outline-not-blob shape |
+| 4. Ops present + wired | `ops_exist`, `wiring` | — |
+| 5. OSC / Syphon up | `osc`, `syphon` | overlay looks right in OBS |
+| 6. FPS | `fps` (editor caveat) | Perform-Mode number, feel |
 
 ---
 
@@ -174,9 +156,7 @@ Then report back — I'll take the next step based on what you observed.
 
 `touchdesigner/scripts/obs_websocket_td.py` contains a beat-reactive scene
 switcher targeting `'Layer 0 — Drop'` / `'Layer 0 — Build'` / `'Layer 0 — Baseline'`.
-It is **not active** (not wired to a CHOP Execute DAT in the v2 network).
-If you enable it, you must first **create those three scenes in OBS** — they don't
-exist yet. The **"New Radio DJ Scene" is sacred and must never be touched** — the
-SCENES dict is coded to never reference it. Enable the switcher only after those
-scenes exist and you've tested it in a scratch OBS setup, never against the production
-scene.
+It is **not active**. If you enable it, first **create those three scenes in OBS**
+(they don't exist yet — that's PLAN-03). The **"New Radio DJ Scene" is sacred and
+must never be touched** — the SCENES dict is coded to never reference it. Enable
+only after those scenes exist and you've tested in a scratch OBS setup.
