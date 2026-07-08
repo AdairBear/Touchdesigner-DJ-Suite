@@ -1,4 +1,4 @@
-﻿# segmentation_mask_reader.py -- Script TOP callback
+# segmentation_mask_reader.py -- Script TOP callback
 # ====================================================================
 # Reads the body segmentation mask from shared memory (mmap file)
 # written by movement_tracker.py / body_mask_sender.py and loads it

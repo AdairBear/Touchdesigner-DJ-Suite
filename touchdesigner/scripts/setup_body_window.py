@@ -159,13 +159,34 @@ def _run():
         if win is None:
             win = p.create(windowCOMP, 'body_window')
             made.append('body_window (Window COMP)')
-        win.par.top = 'body_live'
-        win.par.winw = 1280
-        win.par.winh = 720
-        try:
-            win.par.borders = False
-        except Exception:
-            pass
+        # Window COMP's operator parameter differs across TD builds
+        # ('op' on current builds; 'top' does NOT exist -> AttributeError).
+        # Probe the known candidates and set whichever the build exposes.
+        _wpar = None
+        for _nm in ('op', 'displayop', 'top', 'node', 'operator'):
+            _cand = getattr(win.par, _nm, None)
+            if _cand is not None:
+                try:
+                    _cand.val = 'body_live'
+                    _wpar = _nm
+                    break
+                except Exception:
+                    pass
+        if _wpar:
+            print("[setup_body_window] window shows body_live via par." + _wpar)
+        else:
+            print("[setup_body_window] WARN: no operator par on Window COMP; "
+                  "available pars: " + ", ".join(pp.name for pp in win.pars()))
+        # Size / border pars are cosmetic and their names vary across builds.
+        # Guard each independently so a missing par can NEVER stop the window
+        # from opening — winopen.pulse() below is the one call that must run.
+        for _pn, _pv in (('winw', 1280), ('winh', 720), ('borders', False)):
+            try:
+                _p = getattr(win.par, _pn, None)
+                if _p is not None:
+                    _p.val = _pv
+            except Exception:
+                pass
         win.nodeX, win.nodeY = 400, 0
         win.par.winopen.pulse()
     except Exception as e:
@@ -181,7 +202,10 @@ def _run():
                     '/Users/thomasadair/projects/touchdesigner-dj-suite/'
                     'touchdesigner/scripts/segmentation_mask_reader.py'
                 ).read()
-                cb.text = fixed
+                # Strip a leading UTF-8 BOM: TD's Python parser rejects U+FEFF
+                # ("invalid non-printable character") and body_mask_top's DAT
+                # would fail to compile, blacking out the main pipeline.
+                cb.text = fixed.lstrip("\ufeff")
                 bmt.cook(force=True)
                 print("[setup_body_window] re-synced body_mask_top reader DAT")
     except Exception as e:
