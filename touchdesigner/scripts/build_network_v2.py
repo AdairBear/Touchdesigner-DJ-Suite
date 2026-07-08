@@ -106,15 +106,23 @@ def _make(op_type, name, x, y):
 
 
 def _text_dat_from_file(name, file_path, x, y):
-    """Text DAT whose contents are synced from a file on disk."""
+    """Text DAT loaded from a file on disk, with any UTF-8 BOM stripped.
+
+    We read the bytes and set .text ourselves instead of using TD's
+    file/syncfile loader: on this build syncfile preserves a leading BOM
+    (U+FEFF), which TD's Python parser then rejects ("invalid non-printable
+    character") — that silently blacked out body_mask_top (stuck at the 128x128
+    default because setup() never ran). Setting .text directly guarantees the
+    DAT compiles regardless of the source file's byte-order mark.
+    """
     dat = _make(textDAT, name, x, y)
     if os.path.exists(file_path):
-        dat.par.file = file_path
-        dat.par.syncfile = True
-        try:
-            dat.par.loadonstartpulse.pulse()
-        except Exception as e:
-            _log("  loadonstart pulse failed for " + name + ": " + str(e))
+        with open(file_path, "rb") as _f:
+            _raw = _f.read()
+        if _raw[:3] == b"\xef\xbb\xbf":
+            _raw = _raw[3:]
+        dat.text = _raw.decode("utf-8")
+        dat.par.file = file_path  # keep the path reference for humans; no sync
     else:
         _log("  !! file missing: " + file_path)
     return dat
