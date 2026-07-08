@@ -10,7 +10,7 @@
 # What it builds (all additive, nothing existing is deleted):
 #   /project1/body_live          Script TOP  -> reads mmap, bold cyan outline
 #   /project1/body_live_reader   Text DAT    -> the reader callbacks
-#   /project1/body_window        Window COMP -> shows body_live, opens fullscreen-ish
+#   floating viewer of body_live (openViewer) -> the "separate box" on screen
 # It ALSO re-syncs the real body_mask_top callbacks DAT with the correct
 # 4-byte-header reader so the main pipeline gets its input back.
 # ====================================================================
@@ -153,47 +153,24 @@ def _run():
         print("[setup_body_window] Script TOP error: " + str(e))
         return
 
-    # --- 3. Window COMP ----------------------------------------------
+    # --- 3. Floating window showing the body silhouette --------------
+    # A Window COMP will NOT display a bare Script TOP: it needs a panel COMP
+    # (Base/Container) as its source and warns "missing or points to a blank
+    # Base component" otherwise. The correct, simplest "separate box" for a TOP
+    # is its own floating viewer via OP.openViewer(). Destroy any orphaned
+    # Window COMP from earlier attempts so no warning node lingers.
     try:
-        win = op('/project1/body_window')
-        if win is None:
-            win = p.create(windowCOMP, 'body_window')
-            made.append('body_window (Window COMP)')
-        # Window COMP's operator parameter differs across TD builds
-        # ('op' on current builds; 'top' does NOT exist -> AttributeError).
-        # Probe the known candidates and set whichever the build exposes.
-        _live_path = op('/project1/body_live').path  # '/project1/body_live'
-        # Window COMP's display-source par is `winop` (confirmed on this build);
-        # keep the others as cross-build fallbacks.
-        _wpar = None
-        for _nm in ('winop', 'op', 'displayop', 'top', 'node', 'operator'):
-            _cand = getattr(win.par, _nm, None)
-            if _cand is not None:
-                try:
-                    _cand.val = _live_path
-                    _wpar = _nm
-                    break
-                except Exception:
-                    pass
-        if _wpar:
-            print("[setup_body_window] window shows body_live via par." + _wpar)
-        else:
-            print("[setup_body_window] WARN: no operator par on Window COMP; "
-                  "available pars: " + ", ".join(pp.name for pp in win.pars()))
-        # Size / border pars are cosmetic and their names vary across builds.
-        # Guard each independently so a missing par can NEVER stop the window
-        # from opening — winopen.pulse() below is the one call that must run.
-        for _pn, _pv in (('winw', 1280), ('winh', 720), ('borders', False)):
+        _oldwin = op('/project1/body_window')
+        if _oldwin is not None:
             try:
-                _p = getattr(win.par, _pn, None)
-                if _p is not None:
-                    _p.val = _pv
+                _oldwin.destroy()
+                print("[setup_body_window] removed orphan body_window Window COMP")
             except Exception:
                 pass
-        win.nodeX, win.nodeY = 400, 0
-        win.par.winopen.pulse()
+        stop.openViewer(unique=True, borders=True)
+        print("[setup_body_window] opened floating viewer for body_live")
     except Exception as e:
-        print("[setup_body_window] Window COMP error: " + str(e))
+        print("[setup_body_window] viewer error: " + str(e))
 
     # --- 4. re-sync the REAL body_mask_top DAT (repair main pipeline) --
     try:
