@@ -162,12 +162,13 @@ def _run():
         # Window COMP's operator parameter differs across TD builds
         # ('op' on current builds; 'top' does NOT exist -> AttributeError).
         # Probe the known candidates and set whichever the build exposes.
+        _live_path = op('/project1/body_live').path  # '/project1/body_live'
         _wpar = None
         for _nm in ('op', 'displayop', 'top', 'node', 'operator'):
             _cand = getattr(win.par, _nm, None)
             if _cand is not None:
                 try:
-                    _cand.val = 'body_live'
+                    _cand.val = _live_path
                     _wpar = _nm
                     break
                 except Exception:
