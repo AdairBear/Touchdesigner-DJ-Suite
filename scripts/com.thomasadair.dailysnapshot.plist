@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.thomasadair.dailysnapshot</string>
+
+    <!--
+      Runs the deterministic /snapshot Python tool DIRECTLY (no Claude wrapper).
+      Replaces the token-burning daily-snapshot scheduled skill: that wrapped a
+      $0.00 ~30ms Python command in a Claude agent that hit token limits daily.
+      Login shell (/bin/bash -lc) reproduces Thomas's proven interactive env so
+      `/usr/bin/env python3` resolves the same interpreter that works by hand.
+    -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>-lc</string>
+        <string>PYTHONPATH=/Users/thomasadair/projects/p1-growth/the-conductor /usr/bin/env python3 -m services.snapshot.snapshot --window-hours 24</string>
+    </array>
+
+    <!-- 22:00 local time, every day -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>22</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/dailysnapshot.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/tmp/dailysnapshot.log</string>
+
+    <!-- Do not fire on load/login — only at the scheduled 22:00. -->
+    <key>RunAtLoad</key>
+    <false/>
+</dict>
+</plist>
