@@ -163,8 +163,10 @@ def _run():
         # ('op' on current builds; 'top' does NOT exist -> AttributeError).
         # Probe the known candidates and set whichever the build exposes.
         _live_path = op('/project1/body_live').path  # '/project1/body_live'
+        # Window COMP's display-source par is `winop` (confirmed on this build);
+        # keep the others as cross-build fallbacks.
         _wpar = None
-        for _nm in ('op', 'displayop', 'top', 'node', 'operator'):
+        for _nm in ('winop', 'op', 'displayop', 'top', 'node', 'operator'):
             _cand = getattr(win.par, _nm, None)
             if _cand is not None:
                 try:
