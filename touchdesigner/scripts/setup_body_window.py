@@ -37,6 +37,8 @@ _fh = None
 _mm = None
 _last_frame = -1
 _last_rgba = None
+_stale_count = 0
+STALE_LIMIT = 180  # cooks the frame counter may freeze before we reopen (~3s)
 
 
 def _open_mmap():
@@ -73,7 +75,7 @@ def _dilate(m, iters):
 
 
 def cook(scriptOP):
-    global _mm, _last_frame, _last_rgba
+    global _mm, _last_frame, _last_rgba, _stale_count
     if _mm is None:
         if not _open_mmap():
             scriptOP.copyNumpyArray(np.zeros((MASK_H, MASK_W, 4), dtype=np.float32))
@@ -83,6 +85,7 @@ def cook(scriptOP):
         frame_num = struct.unpack("<I", _mm.read(HEADER_SIZE)[0:4])[0]
         if frame_num != _last_frame or _last_rgba is None:
             _last_frame = frame_num
+            _stale_count = 0
             raw = _mm.read(MASK_W * MASK_H)
             mask = np.frombuffer(raw, dtype=np.uint8).reshape((MASK_H, MASK_W))
             fat = _dilate(mask, DILATE_ITERS).astype(np.float32) / 255.0
@@ -92,10 +95,23 @@ def cook(scriptOP):
             rgba[:, :, 2] = fat * COLOR[2]
             rgba[:, :, 3] = fat
             _last_rgba = rgba
-        scriptOP.copyNumpyArray(_last_rgba)
+        else:
+            # Frame counter frozen -> mmap is stale (writer recreated the file).
+            # Reopen fresh after STALE_LIMIT cooks so the visible screen self-heals
+            # instead of silently freezing on a dead handle.
+            _stale_count += 1
+            if _stale_count >= STALE_LIMIT:
+                _stale_count = 0
+                _last_frame = -1
+                _open_mmap()
+        if _last_rgba is not None:
+            scriptOP.copyNumpyArray(_last_rgba)
+        else:
+            scriptOP.copyNumpyArray(np.zeros((MASK_H, MASK_W, 4), dtype=np.float32))
     except Exception as e:
         print("[body_live] read error: " + str(e))
         _last_rgba = None
+        _stale_count = 0
         _open_mmap()
 
 
