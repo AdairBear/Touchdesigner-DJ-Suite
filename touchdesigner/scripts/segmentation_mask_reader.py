@@ -1,4 +1,4 @@
-# segmentation_mask_reader.py -- Script TOP callback
+﻿# segmentation_mask_reader.py -- Script TOP callback
 # ====================================================================
 # Reads the body segmentation mask from shared memory (mmap file)
 # written by movement_tracker.py / body_mask_sender.py and loads it
@@ -40,6 +40,15 @@ _fh = None
 _mm = None
 _last_frame = -1
 _last_rgba = None  # cached output — always output something, never return bare
+_stale_count = 0  # consecutive cooks the frame counter has NOT advanced
+
+# Staleness watchdog: the writer bumps the frame counter EVERY processed camera
+# frame (~30 fps), so even a motionless person keeps it climbing. If it freezes
+# for this many cooks (~3 s at 60 fps) our mmap is dead — the writer recreated
+# the file, or we locked onto a stale inode from a previous tracker session.
+# That is the silent "June-8 killer": no exception is thrown, we just output the
+# same cached black frame forever. When it trips, we reopen the mmap fresh.
+STALE_LIMIT = 180
 
 
 def _open_mmap():
@@ -74,7 +83,7 @@ def cook(scriptOP):
     """Called every frame by the Script TOP.
     Reads the mmap mask and writes it into the TOP's pixel buffer.
     """
-    global _mm, _last_frame, _last_rgba
+    global _mm, _last_frame, _last_rgba, _stale_count
 
     # Open mmap if not yet open
     if _mm is None:
@@ -90,6 +99,7 @@ def cook(scriptOP):
 
         if frame_num != _last_frame or _last_rgba is None:
             _last_frame = frame_num
+            _stale_count = 0
             raw = _mm.read(MASK_W * MASK_H)
             mask = np.frombuffer(raw, dtype=np.uint8).reshape((MASK_H, MASK_W))
             mask_f = mask.astype(np.float32) / 255.0
@@ -98,13 +108,28 @@ def cook(scriptOP):
             _last_rgba[:, :, 1] = mask_f
             _last_rgba[:, :, 2] = mask_f
             _last_rgba[:, :, 3] = mask_f
+        else:
+            # Frame counter did NOT advance. Writer bumps it every frame while
+            # alive, so a freeze means our mmap is stale. Reopen fresh after
+            # STALE_LIMIT cooks; leave _last_frame = -1 so the next cook forces
+            # a re-read off the new mapping. This is the self-heal for the
+            # silent stale-handle death — it fails loud into a reopen, not black.
+            _stale_count += 1
+            if _stale_count >= STALE_LIMIT:
+                _stale_count = 0
+                _last_frame = -1
+                _open_mmap()
 
         # Always output — returning without copyNumpyArray blacks out the TOP
-        scriptOP.copyNumpyArray(_last_rgba)
+        if _last_rgba is not None:
+            scriptOP.copyNumpyArray(_last_rgba)
+        else:
+            scriptOP.copyNumpyArray(np.zeros((MASK_H, MASK_W, 4), dtype=np.float32))
 
     except Exception as e:
         print("[segmentation_mask_reader] read error: " + str(e))
         _last_rgba = None
+        _stale_count = 0
         _open_mmap()
 
 
