@@ -9,6 +9,9 @@
 PROJECT_DIR="/Users/thomasadair/projects/touchdesigner-dj-suite"
 cd "$PROJECT_DIR" || { echo "Cannot cd to $PROJECT_DIR"; exit 1; }
 
+# shellcheck source=lib/log_json.sh
+source "$PROJECT_DIR/lib/log_json.sh"
+
 LOG="$PROJECT_DIR/tracker.log"
 
 echo "---- starting body tracker $(date) ----"
@@ -16,6 +19,7 @@ echo "Project: $PROJECT_DIR"
 echo "Python:  $PROJECT_DIR/venv/bin/python"
 echo "Log:     $LOG"
 echo
+log_json info tracker_start
 
 # Kill any existing tracker so we don't double up on the camera.
 pkill -f 'python.*movement_tracker.py' 2>/dev/null && echo 'killed previous tracker' || true
@@ -47,6 +51,8 @@ echo 'launched Serato->SAMSUNG placer in background (log: /tmp/serato_placer.log
 venv/bin/python python/movement_tracker.py \
     --max-people 1 \
     2>&1 | tee -a "$LOG"
+
+log_json info tracker_exit exit_code="${PIPESTATUS[0]}"
 
 # P4: tracker has exited (killed on shutdown) -> close this Terminal window so it
 # doesn't linger after the set. Backgrounded so it can close its own parent window.

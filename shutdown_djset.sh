@@ -2,7 +2,9 @@
 # shutdown_djset.sh -- clean DJ-set shutdown with NO dialogs.
 # Use this to end the show instead of relying on the launcher's quit (which pops
 # Serato's "Are you sure?" prompt). Serato reopens fine from a SIGKILL.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/log_json.sh"
 echo "shutting down DJ set (no prompts)..."
+log_json info shutdown_start
 
 # SH-1: force-kill + verify. TD and OBS both ignore a graceful `quit` Apple
 # Event under real show conditions (osascript exits 0 on delivery, not on the
@@ -12,14 +14,20 @@ kill_and_verify() {
   local label="$1" pattern="$2"
   if ! pgrep -x "$pattern" >/dev/null 2>&1; then
     echo "  $label not running"
+    log_json info process_not_running process="$label"
     return
   fi
   pkill -9 -x "$pattern" 2>/dev/null
   for _ in 1 2 3; do
-    pgrep -x "$pattern" >/dev/null 2>&1 || { echo "  killed $label (-9, no prompt)"; return; }
+    pgrep -x "$pattern" >/dev/null 2>&1 || {
+      echo "  killed $label (-9, no prompt)"
+      log_json info process_killed process="$label" signal=9
+      return
+    }
     sleep 1
   done
   echo "  CRITICAL: $label still running 3s after pkill -9 -x \"$pattern\""
+  log_json critical process_survived_kill process="$label" signal=9 wait_s=3
 }
 
 # P3: force-kill Serato -- bypasses the "Are you sure?" close dialog.
@@ -46,3 +54,4 @@ osascript -e 'tell application "BUTT" to quit' 2>/dev/null
 osascript -e 'tell application "Terminal" to close (every window whose name contains "start_tracker")' 2>/dev/null
 
 echo "done."
+log_json info shutdown_done

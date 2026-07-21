@@ -2,9 +2,14 @@
 # serato_placer.sh -- move the Serato DJ Pro window onto the SAMSUNG display.
 # Backgrounded by start_tracker.command; waits for Serato's window to exist, then
 # positions it on SAMSUNG (found BY NAME via NSScreen, robust to arrangement drift).
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/log_json.sh
+source "$REPO/lib/log_json.sh"
+
 LOG=/tmp/serato_placer.log
 exec >>"$LOG" 2>&1
 echo "==== serato_placer $(date) ===="
+log_json info placer_start
 
 # SAMSUNG AppKit top-left origin + size, by NAME (not index).
 read SX SY SW SH < <(/usr/bin/swift - <<'SW' 2>/dev/null
@@ -18,9 +23,11 @@ SW
 )
 if [ -z "${SX:-}" ]; then
   echo "CRITICAL: SAMSUNG display not found by name -- Serato left where it opened"
+  log_json critical display_not_found display=SAMSUNG
   exit 1
 fi
 echo "SAMSUNG ax=($SX,$SY) ${SW}x${SH}"
+log_json info display_found display=SAMSUNG x="$SX" y="$SY" w="$SW" h="$SH"
 
 # Wait for a Serato window to exist (launcher opens Serato a few seconds after us).
 for i in $(seq 1 90); do
@@ -40,3 +47,4 @@ tell application "System Events" to tell process "Serato DJ Pro"
 end tell
 AS
 echo "placed Serato on SAMSUNG at ($SX,$SY)"
+log_json info placer_done x="$SX" y="$SY"

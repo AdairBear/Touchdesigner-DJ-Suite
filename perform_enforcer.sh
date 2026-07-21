@@ -24,11 +24,16 @@ MAX_WAIT_TD=90       # s to wait for TD process
 LOAD_GRACE=10        # s to let the project deserialize after TD appears
 MAX_ATTEMPTS=25      # perform-enter attempts (~ MAX_ATTEMPTS*3s)
 
+# shellcheck source=lib/log_json.sh
+source "$REPO/lib/log_json.sh"
+
 exec >>"$LOG" 2>&1
 echo "==== perform_enforcer start $(date) ===="
+log_json info enforcer_start
 
 if [ -f "$SKIP" ]; then
   echo "opt-out ($SKIP) present -> not enforcing perform mode (dev session)"
+  log_json info enforcer_skip reason=dev_opt_out
   exit 0
 fi
 
@@ -40,6 +45,7 @@ done
 if ! pgrep -f 'MacOS/TouchDesigner' >/dev/null 2>&1; then
   echo "CRITICAL: TouchDesigner never started within ${MAX_WAIT_TD}s"
   printf '{"active": false, "reason": "CRITICAL TD-not-running", "ts": %s}\n' "$(date +%s)" > "$HB"
+  log_json critical td_never_started max_wait_s="$MAX_WAIT_TD"
   exit 1
 fi
 sleep "$LOAD_GRACE"
@@ -73,12 +79,14 @@ for attempt in $(seq 1 "$MAX_ATTEMPTS"); do
   # Page once and stop; the window params need fixing (setup_perform_mode.py).
   if [ -f "$HB" ] && grep -q '"fatal": true' "$HB"; then
     echo "CRITICAL: /project1/perform has a fatal window error -- STOPPING to avoid modal spam. $(cat "$HB")"
+    log_json critical fatal_window_error attempt="$attempt"
     exit 1
   fi
   # Success requires BOTH active AND on the HISENSE display -- an active perform
   # window on the wrong monitor (Samsung) is exactly the failure we're fixing.
   if [ -f "$HB" ] && grep -q '"active": true' "$HB" && grep -q '"on_hisense": true' "$HB"; then
     echo "PERFORM MODE ACTIVE ON HISENSE (attempt $attempt) $(cat "$HB")"
+    log_json info perform_mode_active attempt="$attempt"
     exit 0
   fi
   echo "attempt $attempt: not on HISENSE yet ($(cat "$HB" 2>/dev/null))"
@@ -87,4 +95,5 @@ done
 
 echo "CRITICAL: Perform Mode NOT active after $MAX_ATTEMPTS attempts -- SHOW GRAPHICS DEGRADED"
 printf '{"active": false, "reason": "CRITICAL enforcer-exhausted", "ts": %s}\n' "$(date +%s)" > "$HB"
+log_json critical enforcer_exhausted max_attempts="$MAX_ATTEMPTS"
 exit 1
