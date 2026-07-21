@@ -23,6 +23,7 @@ LOG="/tmp/perform_enforcer.log"
 MAX_WAIT_TD=90       # s to wait for TD process
 LOAD_GRACE=10        # s to let the project deserialize after TD appears
 MAX_ATTEMPTS=25      # perform-enter attempts (~ MAX_ATTEMPTS*3s)
+PIDFILE="/tmp/perform_enforcer.pid"
 
 # shellcheck source=lib/log_json.sh
 source "$REPO/lib/log_json.sh"
@@ -30,6 +31,18 @@ source "$REPO/lib/log_json.sh"
 exec >>"$LOG" 2>&1
 echo "==== perform_enforcer start $(date) ===="
 log_json info enforcer_start
+
+# SH-4: single-instance guard. Re-running start_tracker.command (the
+# documented recovery for a tracker crash) used to spawn a second enforcer
+# while the first was still mid-loop -- both rm'd the same heartbeat and both
+# typed into the Textport, fighting each other for 3.5 minutes.
+if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null; then
+  echo "already running as pid $(cat "$PIDFILE") -- exiting"
+  log_json info enforcer_already_running existing_pid="$(cat "$PIDFILE")"
+  exit 0
+fi
+echo $$ > "$PIDFILE"
+trap 'rm -f "$PIDFILE"' EXIT
 
 if [ -f "$SKIP" ]; then
   echo "opt-out ($SKIP) present -> not enforcing perform mode (dev session)"
