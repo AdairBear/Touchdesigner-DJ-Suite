@@ -57,7 +57,7 @@ for i in $(seq 1 "$MAX_WAIT_TD"); do
 done
 if ! pgrep -f 'MacOS/TouchDesigner' >/dev/null 2>&1; then
   echo "CRITICAL: TouchDesigner never started within ${MAX_WAIT_TD}s"
-  printf '{"active": false, "reason": "CRITICAL TD-not-running", "ts": %s}\n' "$(date +%s)" > "$HB"
+  printf '{"active": false, "reason": "CRITICAL TD-not-running", "ts": %s}\n' "$(date +%s)" > "$HB.tmp" && mv -f "$HB.tmp" "$HB"
   log_json critical td_never_started max_wait_s="$MAX_WAIT_TD"
   exit 1
 fi
@@ -81,23 +81,39 @@ end tell
 AS
 }
 
+# Read the heartbeat's own "ts" field (0 if missing/unparseable). Used instead
+# of `rm -f "$HB"` + file-existence: the Python side now writes atomically
+# (OBS-4), so the file is never observed mid-write, and here we wait for ts to
+# *advance* past the pre-attempt value rather than deleting the file between
+# attempts -- deleting created a window where a reader (e.g. check_perform_mode.sh
+# running concurrently) could see "no heartbeat" and report a false CRITICAL.
+read_hb_ts() {
+  [ -f "$HB" ] || { echo 0; return; }
+  /usr/bin/python3 -c "import json;print(json.load(open('$HB')).get('ts',0))" 2>/dev/null || echo 0
+}
+
 # 2. Drive perform mode until confirmed active.
 for attempt in $(seq 1 "$MAX_ATTEMPTS"); do
   [ -f "$SKIP" ] && { echo "opt-out appeared mid-run -> stop"; exit 0; }
-  rm -f "$HB"
+  prev_ts=$(read_hb_ts)
   send_enforce
-  for w in 1 2 3 4 5; do [ -f "$HB" ] && break; sleep 1; done
+  fresh=""
+  for w in 1 2 3 4 5; do
+    cur_ts=$(read_hb_ts)
+    if awk -v a="$cur_ts" -v b="$prev_ts" 'BEGIN{exit !(a>b)}'; then fresh=1; break; fi
+    sleep 1
+  done
   # A fatal window error (e.g. "Invalid window size") throws a BLOCKING modal.
   # Do NOT keep retrying -- that just spams the modal Thomas can't dismiss.
   # Page once and stop; the window params need fixing (setup_perform_mode.py).
-  if [ -f "$HB" ] && grep -q '"fatal": true' "$HB"; then
+  if [ -n "$fresh" ] && grep -q '"fatal": true' "$HB"; then
     echo "CRITICAL: /project1/perform has a fatal window error -- STOPPING to avoid modal spam. $(cat "$HB")"
     log_json critical fatal_window_error attempt="$attempt"
     exit 1
   fi
   # Success requires BOTH active AND on the HISENSE display -- an active perform
   # window on the wrong monitor (Samsung) is exactly the failure we're fixing.
-  if [ -f "$HB" ] && grep -q '"active": true' "$HB" && grep -q '"on_hisense": true' "$HB"; then
+  if [ -n "$fresh" ] && grep -q '"active": true' "$HB" && grep -q '"on_hisense": true' "$HB"; then
     echo "PERFORM MODE ACTIVE ON HISENSE (attempt $attempt) $(cat "$HB")"
     log_json info perform_mode_active attempt="$attempt"
     exit 0
@@ -107,6 +123,6 @@ for attempt in $(seq 1 "$MAX_ATTEMPTS"); do
 done
 
 echo "CRITICAL: Perform Mode NOT active after $MAX_ATTEMPTS attempts -- SHOW GRAPHICS DEGRADED"
-printf '{"active": false, "reason": "CRITICAL enforcer-exhausted", "ts": %s}\n' "$(date +%s)" > "$HB"
+printf '{"active": false, "reason": "CRITICAL enforcer-exhausted", "ts": %s}\n' "$(date +%s)" > "$HB.tmp" && mv -f "$HB.tmp" "$HB"
 log_json critical enforcer_exhausted max_attempts="$MAX_ATTEMPTS"
 exit 1

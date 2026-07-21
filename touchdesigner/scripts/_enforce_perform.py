@@ -1,6 +1,9 @@
 # _enforce_perform.py -- TD-side: detect HISENSE by NAME, force Perform Mode
 # onto it, verify, and report. Driven by perform_enforcer.sh. Idempotent.
-import json, time, subprocess, re
+import json
+import time
+import subprocess
+import re
 
 
 def hisense_monitor():
@@ -10,13 +13,17 @@ def hisense_monitor():
     non-primary display if the name isn't found."""
     res = None
     try:
-        out = subprocess.run(['/usr/sbin/system_profiler', 'SPDisplaysDataType'],
-                             capture_output=True, text=True, timeout=12).stdout
+        out = subprocess.run(
+            ["/usr/sbin/system_profiler", "SPDisplaysDataType"],
+            capture_output=True,
+            text=True,
+            timeout=12,
+        ).stdout
         lines = out.splitlines()
         for i, ln in enumerate(lines):
-            if 'hisense' in ln.lower() and ln.rstrip().endswith(':'):
+            if "hisense" in ln.lower() and ln.rstrip().endswith(":"):
                 for j in range(i + 1, min(i + 12, len(lines))):
-                    m = re.search(r'Resolution:\s*(\d+)\s*x\s*(\d+)', lines[j])
+                    m = re.search(r"Resolution:\s*(\d+)\s*x\s*(\d+)", lines[j])
                     if m:
                         res = (int(m.group(1)), int(m.group(2)))
                         break
@@ -26,16 +33,16 @@ def hisense_monitor():
     if res:
         for mo in monitors:
             if mo.width == res[0] and mo.height == res[1]:
-                return mo.index, res, 'name-match'
+                return mo.index, res, "name-match"
     cand = [mo for mo in monitors if not mo.isPrimary]
     if cand:
         mo = max(cand, key=lambda m: m.width * m.height)
-        return mo.index, (mo.width, mo.height), 'fallback-largest'
-    return None, None, 'none'
+        return mo.index, (mo.width, mo.height), "fallback-largest"
+    return None, None, "none"
 
 
 idx, res, method = hisense_monitor()
-w = op('/project1/perform')
+w = op("/project1/perform")
 err = None
 win_errors = []
 active = False
@@ -44,13 +51,13 @@ win_monitor = None
 
 try:
     if w is not None and idx is not None:
-        w.par.monitor = idx                 # HISENSE, detected by NAME (not hardcoded)
-        w.par.size = 'custom'
-        w.par.winw = res[0]                 # concrete ints, no zero-resolving expr
+        w.par.monitor = idx  # HISENSE, detected by NAME (not hardcoded)
+        w.par.size = "custom"
+        w.par.winw = res[0]  # concrete ints, no zero-resolving expr
         w.par.winh = res[1]
         w.par.winoffsetx = 0
         w.par.winoffsety = 0
-        w.par.dpiscaling = 'native'
+        w.par.dpiscaling = "native"
         w.par.setperform.pulse()
     ui.performMode = True
 except Exception as e:
@@ -58,23 +65,46 @@ except Exception as e:
 try:
     active = bool(ui.performMode)
 except Exception as e:
-    err = (err or '') + ' read:' + str(e)
+    err = (err or "") + " read:" + str(e)
 if w is not None:
     isopen = bool(w.isOpen)
     win_monitor = w.par.monitor.eval()
     win_errors = [str(e) for e in w.errors()]
 
 # on_hisense: the window's target monitor equals the detected HISENSE index.
-on_hisense = (idx is not None and win_monitor == idx)
+on_hisense = idx is not None and win_monitor == idx
 # fatal = a real window ERROR (the "Invalid window size" modal) -> stop, do NOT
 # spam the modal. NOT-on-HISENSE / idx-None are transient (system_profiler can be
 # slow during load) -> the enforcer keeps retrying and only CRITICALs on exhaustion.
 fatal = bool(win_errors)
 
-json.dump({'active': active, 'isOpen': isopen, 'on_hisense': on_hisense,
-           'hisense_index': idx, 'hisense_res': res, 'detect_method': method,
-           'window_monitor': win_monitor, 'win_errors': win_errors,
-           'fatal': fatal, 'reason': 'enforcer', 'err': err, 'ts': time.time()},
-          open('/tmp/td_perform_state.json', 'w'))
-print('[_enforce_perform] active=%s on_hisense=%s idx=%s(%s) errors=%s fatal=%s'
-      % (active, on_hisense, idx, method, win_errors, fatal))
+# OBS-4: write-then-rename instead of an in-place truncate. perform_enforcer.sh
+# polls this file every retry; a direct `open(path, "w")` has a window where a
+# reader sees a truncated/partial file, and the old rm-then-write pattern on
+# the bash side had a window where the file didn't exist at all -- both read
+# as a false CRITICAL. os.replace is atomic on the same filesystem (/tmp).
+_hb_path = "/tmp/td_perform_state.json"
+_hb_tmp = _hb_path + ".tmp"
+with open(_hb_tmp, "w") as _f:
+    json.dump(
+        {
+            "active": active,
+            "isOpen": isopen,
+            "on_hisense": on_hisense,
+            "hisense_index": idx,
+            "hisense_res": res,
+            "detect_method": method,
+            "window_monitor": win_monitor,
+            "win_errors": win_errors,
+            "fatal": fatal,
+            "reason": "enforcer",
+            "err": err,
+            "ts": time.time(),
+        },
+        _f,
+    )
+os.replace(_hb_tmp, _hb_path)
+print(
+    "[_enforce_perform] active=%s on_hisense=%s idx=%s(%s) errors=%s fatal=%s"
+    % (active, on_hisense, idx, method, win_errors, fatal)
+)
