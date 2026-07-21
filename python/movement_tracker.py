@@ -29,6 +29,17 @@ MASK_W, MASK_H = 640, 480  # Resolution of the segmentation mask
 HEADER_SIZE = 4  # 4 bytes frame counter (uint32)
 TOTAL_SIZE = HEADER_SIZE + MASK_W * MASK_H
 
+# --- SEQLOCK double-buffer (2026-07-19) --------------------------------------
+# The old single-buffer + per-frame mmap.flush() (msync to disk) stalled TD's
+# reader when it read pages mid-writeback -> the freeze. Now: two buffers written
+# alternately with NO flush (IPC via shared pages), and an 8-byte uint64 frame
+# number published to SEQ_PATH after each write. TD's segmentation_mask_reader.py
+# reads buffer = seq%2, re-checks seq, and never blocks. See that file.
+MASK_BYTES = MASK_W * MASK_H
+BUF_A = "/tmp/djsam_bodymask_A.raw"
+BUF_B = "/tmp/djsam_bodymask_B.raw"
+SEQ_PATH = "/tmp/djsam_bodymask.seq"
+
 # --- Visual mode (flame / lightning) ---
 # Maps the human-readable mode name to the integer index TD's Switch TOP uses.
 # Broadcast on OSC so TouchDesigner can swap the body-outline shader live.
@@ -72,6 +83,8 @@ class MovementTracker:
         self.mask_path = mask_path
         self.mask_mmap = None
         self.mask_fh = None
+        self.buf_mmaps = None   # seqlock double-buffer (set in _init_mask_mmap)
+        self.seq_mmap = None
         self.frame_counter = 0
         # Latest contour pixel count (set by _process_segmentation). Lets callers
         # / tests read how thin the emitted outline is. 0 until first frame.
@@ -134,36 +147,42 @@ class MovementTracker:
     # Segmentation mask shared memory
     # ------------------------------------------------------------------
     def _init_mask_mmap(self):
-        """Create / open the mmap file for body segmentation mask output."""
-        if not os.path.exists(self.mask_path):
-            with open(self.mask_path, "wb") as f:
-                f.write(bytes(TOTAL_SIZE))
-            logger.info(f"Created mask mmap file: {self.mask_path}")
-        self.mask_fh = open(self.mask_path, "r+b")
-        self.mask_mmap = mmap.mmap(self.mask_fh.fileno(), TOTAL_SIZE)
+        """Create / open the SEQLOCK double-buffer + sequence file."""
+        self.buf_mmaps = []
+        self.buf_fhs = []
+        for p in (BUF_A, BUF_B):
+            if not os.path.exists(p) or os.path.getsize(p) != MASK_BYTES:
+                with open(p, "wb") as f:
+                    f.write(bytes(MASK_BYTES))
+            fh = open(p, "r+b")
+            self.buf_fhs.append(fh)
+            self.buf_mmaps.append(mmap.mmap(fh.fileno(), MASK_BYTES))
+        if not os.path.exists(SEQ_PATH) or os.path.getsize(SEQ_PATH) != 8:
+            with open(SEQ_PATH, "wb") as f:
+                f.write(bytes(8))
+        self.seq_fh = open(SEQ_PATH, "r+b")
+        self.seq_mmap = mmap.mmap(self.seq_fh.fileno(), 8)
         logger.info(
-            f"Segmentation mask mmap ready: {self.mask_path}  ({MASK_W}x{MASK_H})"
+            f"Seqlock mask buffers ready: {BUF_A}/{BUF_B} + {SEQ_PATH} ({MASK_W}x{MASK_H})"
         )
 
     def _write_mask(self, mask_array: np.ndarray):
-        """Write a grayscale mask frame into shared memory.
-        Header layout (8 bytes):
-            [0:4]  uint32 frame counter
-            [4:8]  uint32 timestamp in milliseconds (wraps every ~49 days)
-        Body:
-            [8:]   MASK_W * MASK_H bytes, row-major, uint8 0-255
+        """Write a mask frame via the seqlock double-buffer (NO flush).
+
+        Writes the frame into the inactive buffer (frame_counter % 2), then
+        publishes the frame number to the .seq file. Both processes mmap the
+        same pages, so writes are visible to TD's reader WITHOUT msync — which
+        is what removes the read-during-writeback stall (the freeze).
         """
-        if self.mask_mmap is None:
+        if getattr(self, "buf_mmaps", None) is None:
             return
-        # Header is a single uint32 frame counter (4 bytes) to match
-        # body_mask_sender.py. Timestamp is no longer embedded — if you
-        # need it, add a separate OSC channel rather than re-widening
-        # the header (that mismatch caused a segfault in TD).
-        header = np.uint32(self.frame_counter).tobytes()
-        self.mask_mmap.seek(0)
-        self.mask_mmap.write(header)
-        self.mask_mmap.write(mask_array.tobytes())
-        self.mask_mmap.flush()
+        idx = self.frame_counter % 2
+        b = self.buf_mmaps[idx]
+        b.seek(0)
+        b.write(mask_array.tobytes())          # NO flush -- shared pages are enough for IPC
+        # Publish AFTER the buffer write completes: reader picks buffer = seq % 2.
+        self.seq_mmap.seek(0)
+        self.seq_mmap.write(np.uint64(self.frame_counter).tobytes())
 
     def _process_segmentation(self, results_list) -> np.ndarray:
         """Merge segmentation masks from all detected people into one grayscale mask,
@@ -208,7 +227,18 @@ class MovementTracker:
             return np.zeros((MASK_H, MASK_W), dtype=np.uint8)
 
         # Threshold to a crisp binary silhouette (no feathering).
-        binary = (combined > 0.5).astype(np.uint8) * 255
+        binary = (combined > 0.5).astype(np.uint8)
+
+        # SINGLE-SUBJECT FILTER (2026-07-19): MediaPipe's segmentation classifies
+        # ANY person-ish pixels — e.g. clothing draped on a chair — so the mask
+        # can include a false-positive blob away from the DJ. Keep ONLY the
+        # largest connected component (the actual person), dropping separate
+        # clutter blobs so the outline tracks the DJ, never the jersey/chair.
+        n_lbl, labels, stats, _ = cv2.connectedComponentsWithStats(binary, connectivity=8)
+        if n_lbl > 2:  # background(0) + more than one foreground blob
+            largest = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
+            binary = (labels == largest).astype(np.uint8)
+        binary = binary * 255
 
         # Extract a thin, constant-width contour. MORPH_GRADIENT = dilate - erode,
         # which leaves only the silhouette boundary. A 3x3 kernel yields a ~1-2 px
@@ -509,8 +539,10 @@ class MovementTracker:
                     print("Failed to read frame")
                     continue
 
-                # Flip frame horizontally for mirror view
-                frame = cv2.flip(frame, 1)
+                # NO horizontal flip: this rig's OBS Link Camera is un-mirrored, so
+                # the mask must stay in raw camera coordinates to align with it.
+                # (Removed cv2.flip(frame, 1) 2026-07-19 — it put the outline on the
+                # wrong side. TD's outline_flip.flipx is also False = no flip anywhere.)
 
                 # Convert to RGB for MediaPipe
                 frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -643,7 +675,18 @@ class MovementTracker:
         cv2.destroyAllWindows()
         for detector in self.pose_detectors:
             detector.close()
-        # Close mmap
+        # Close seqlock buffers + legacy mmap
+        if getattr(self, "buf_mmaps", None):
+            for m in self.buf_mmaps:
+                try:
+                    m.close()
+                except Exception:
+                    pass
+        if getattr(self, "seq_mmap", None) is not None:
+            try:
+                self.seq_mmap.close()
+            except Exception:
+                pass
         if self.mask_mmap is not None:
             self.mask_mmap.close()
         if self.mask_fh is not None:

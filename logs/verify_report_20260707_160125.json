@@ -1,0 +1,109 @@
+{
+  "context": "post_reload",
+  "timestamp": "20260707_160125",
+  "base": "/project1",
+  "checks": [
+    {
+      "check": "ops_exist",
+      "present": 16,
+      "expected": 16,
+      "missing": [],
+      "v1_ghosts_present": [],
+      "status": "PASS",
+      "detail": "all 16 v2 ops present"
+    },
+    {
+      "check": "wiring",
+      "edges_checked": 10,
+      "mismatches": [],
+      "status": "PASS",
+      "detail": "all 10 wiring edges correct"
+    },
+    {
+      "check": "glsl_bindings:fire_aura_glsl",
+      "status": "PASS",
+      "detail": "uniname0..9 match canonical map",
+      "names": [
+        "uFlameIntensity",
+        "uTurbulence",
+        "uDistortion",
+        "uSparkle",
+        "uMotionEnergy",
+        "uBassEnergy",
+        "uMidEnergy",
+        "uHighEnergy",
+        "uBurstDecay",
+        "uTime"
+      ]
+    },
+    {
+      "check": "glsl_bindings:lightning_glsl",
+      "status": "PASS",
+      "detail": "uniname0..9 match canonical map",
+      "names": [
+        "uFlameIntensity",
+        "uTurbulence",
+        "uDistortion",
+        "uSparkle",
+        "uMotionEnergy",
+        "uBassEnergy",
+        "uMidEnergy",
+        "uHighEnergy",
+        "uBurstDecay",
+        "uTime"
+      ]
+    },
+    {
+      "check": "uniforms_alive",
+      "status": "PASS",
+      "detail": "phase 2 (gap 67.2 s): audio slots 0-8 moved on 4/9 slots; compositor is writing live uniforms. INFO: uTime slot 9 static \u2014 normal on a pure v2 build (shader uses built-in iTime; value9x is bound only if a script set value9x.expr=absTime.seconds).",
+      "phase": 2,
+      "gap_seconds": 67.1833333333343,
+      "deltas": [
+        3.367399617696396e-05,
+        6.70814270613781e-05,
+        6.70814270613781e-05,
+        1.25179554481128e-06,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "audio_slots_moved": 4,
+      "time_slot_moved": false
+    },
+    {
+      "check": "audio_device",
+      "status": "PASS",
+      "detail": "device = 'AppleUSBAudioEngine:PreSonus:Studio 1824c:SC4M20100612:1,2' (PreSonus 1824c)",
+      "device": "AppleUSBAudioEngine:PreSonus:Studio 1824c:SC4M20100612:1,2"
+    },
+    {
+      "check": "osc",
+      "status": "PASS",
+      "detail": "oscin1 active on port 7000"
+    },
+    {
+      "check": "syphon",
+      "status": "PASS",
+      "detail": "syphonOut1 active, sender 'TDSyphonSpoutOut'"
+    },
+    {
+      "check": "mask_alive",
+      "status": "WARN",
+      "detail": "body_mask_top is BLACK (peak=0). If movement_tracker.py is NOT running this is expected \u2014 start `python python/movement_tracker.py --max-people 1` and re-run. If it IS running, the Script TOP isn't outputting despite a healthy mmap (the June-8 killer).",
+      "peak": 0.0
+    },
+    {
+      "check": "fps",
+      "status": "INFO",
+      "detail": "project.cookRate = 60.0 fps. Editor cook rate is not the delivered rate \u2014 confirm 30-60 fps in Perform Mode (F1).",
+      "cook_rate": 60.0
+    }
+  ],
+  "result": "PASS",
+  "failed": [],
+  "errored": []
+}
