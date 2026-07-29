@@ -11,6 +11,8 @@ cd "$PROJECT_DIR" || { echo "Cannot cd to $PROJECT_DIR"; exit 1; }
 
 # shellcheck source=lib/log_json.sh
 source "$PROJECT_DIR/lib/log_json.sh"
+# shellcheck source=lib/kill_tracker.sh
+source "$PROJECT_DIR/lib/kill_tracker.sh"   # kill_tracker(), $TRACKER_PID_FILE
 
 LOG="$PROJECT_DIR/tracker.log"
 
@@ -22,7 +24,10 @@ echo
 log_json info tracker_start
 
 # Kill any existing tracker so we don't double up on the camera.
-pkill -f 'python.*movement_tracker.py' 2>/dev/null && echo 'killed previous tracker' || true
+# Closure 3c (2026-07-29): this was `pkill -f 'python.*movement_tracker.py'`,
+# which matched the command line of any shell that merely quoted the pattern
+# and killed it. Kill by the recorded pid instead -- see lib/kill_tracker.sh.
+kill_tracker "previous tracker"
 sleep 1
 
 # --- Perform Mode enforcer (background) ----------------------------------
@@ -48,10 +53,24 @@ echo 'launched Serato->SAMSUNG placer in background (log: /tmp/serato_placer.log
 # back into the continuation below, right after "--max-people 1 \".
 # NOTE: no `exec` -- we want the shell to survive the tracker so the trailing
 # line runs when the tracker is killed on shutdown (closes this Terminal window).
-venv/bin/python python/movement_tracker.py \
+#
+# Closure 3c: record the tracker's REAL pid so nothing downstream (this script's
+# own kill above, agent/remediation/seqlock_stall.py, the launcher's teardown)
+# ever has to substring-match a command line again. The wrapper writes its own
+# $$ and then `exec`s the tracker, so the recorded pid IS the python process --
+# and because exec keeps the pipeline in the foreground, ${PIPESTATUS[0]} below
+# is still the tracker's exit code. `$$` inside `sh -c` is that sh's own pid
+# (bash 3.2 has no $BASHPID, which is why this isn't a plain subshell).
+sh -c 'echo $$ > "$1"; shift; exec "$@"' _ "$TRACKER_PID_FILE" \
+    venv/bin/python python/movement_tracker.py \
     --max-people 1 \
     2>&1 | tee -a "$LOG"
 
+# Deliberately NOT unlinking $TRACKER_PID_FILE here. A newer run of this script
+# may already own it, and every reader (kill_previous_tracker above,
+# agent/tracker_pid.py) re-validates the pid against `ps` before acting on it,
+# so a stale file is inert by design -- whereas racing to delete someone else's
+# record would send the next kill down the argv-scan fallback for no reason.
 log_json info tracker_exit exit_code="${PIPESTATUS[0]}"
 
 # P4: tracker has exited (killed on shutdown) -> close this Terminal window so it

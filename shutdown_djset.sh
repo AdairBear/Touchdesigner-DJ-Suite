@@ -3,6 +3,8 @@
 # Use this to end the show instead of relying on the launcher's quit (which pops
 # Serato's "Are you sure?" prompt). Serato reopens fine from a SIGKILL.
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/log_json.sh"
+# shellcheck source=lib/kill_tracker.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/kill_tracker.sh"
 echo "shutting down DJ set (no prompts)..."
 log_json info shutdown_start
 
@@ -34,7 +36,15 @@ kill_and_verify() {
 kill_and_verify "Serato DJ Pro" "Serato DJ Pro"
 
 # Stop the OSC tracker + our background helpers.
-pkill -f 'python.*movement_tracker.py' 2>/dev/null && echo "  killed movement_tracker"
+# Closure 3c (2026-07-29): the tracker line was
+# `pkill -f 'python.*movement_tracker.py'`. This is the teardown that runs on
+# every CLOSE APP, so it was the highest-traffic instance of the self-match bug
+# -- `-f` matches the whole command line, so any shell that merely quoted the
+# pattern (an agent session, a terminal running the very command) was in the
+# kill set and died with the tracker. Kill by recorded pid; see
+# lib/kill_tracker.sh. The two helpers below are the same bug class and are
+# knowingly left as-is -- out of Closure 3c's scope, tracked separately.
+kill_tracker "movement_tracker"
 pkill -f 'perform_enforcer.sh' 2>/dev/null
 pkill -f 'serato_placer.sh' 2>/dev/null
 
