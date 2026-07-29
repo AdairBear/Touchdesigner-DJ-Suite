@@ -1,6 +1,7 @@
 # _enforce_perform.py -- TD-side: detect HISENSE by NAME, force Perform Mode
 # onto it, verify, and report. Driven by perform_enforcer.sh. Idempotent.
 import json
+import os
 import time
 import subprocess
 import re
