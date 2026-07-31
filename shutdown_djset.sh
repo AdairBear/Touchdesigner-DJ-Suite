@@ -5,6 +5,37 @@
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/log_json.sh"
 # shellcheck source=lib/kill_tracker.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/kill_tracker.sh"
+# shellcheck source=lib/stop_announcer.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/stop_announcer.sh"
+
+# Closure 4 (2026-07-30): this script had NO argument parsing, so the
+# `--stop-announcer` the launcher has been passing since the announcer became
+# launcher-managed (Sources/AppLauncher.swift) was silently discarded on every
+# CLOSE. The launcher believed the announcer was stopped; it was still running.
+# A silently ignored flag is worse than either real behaviour, so: parse it, act
+# on it, and shout about anything unrecognised rather than swallowing that too.
+STOP_ANNOUNCER=0
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --stop-announcer)
+            STOP_ANNOUNCER=1
+            ;;
+        --announcer-port)
+            shift
+            ANNOUNCER_PORT="$1"
+            ;;
+        --help|-h)
+            echo "usage: shutdown_djset.sh [--stop-announcer] [--announcer-port N]"
+            exit 0
+            ;;
+        *)
+            echo "  WARNING: ignoring unrecognised argument '$1'"
+            log_json warn unknown_argument argument="$1"
+            ;;
+    esac
+    shift
+done
+
 echo "shutting down DJ set (no prompts)..."
 log_json info shutdown_start
 
@@ -47,6 +78,16 @@ kill_and_verify "Serato DJ Pro" "Serato DJ Pro"
 kill_tracker "movement_tracker"
 pkill -f 'perform_enforcer.sh' 2>/dev/null
 pkill -f 'serato_placer.sh' 2>/dev/null
+
+# Closure 4: only when the launcher says this session started it. An announcer
+# someone else started (a hand-run `python3 -m announcer`, a reinstalled
+# LaunchAgent) is not ours to end -- same ownership rule the launcher applies to
+# the watchdog agent.
+if [ "$STOP_ANNOUNCER" -eq 1 ]; then
+    stop_announcer "$ANNOUNCER_PORT"
+else
+    echo "  leaving serato-obs-announcer alone (no --stop-announcer)"
+fi
 
 # Force-kill TD and OBS -- both ignored graceful `quit` under real show
 # conditions and needed a manual kill mid-teardown. The canonical-.toe
