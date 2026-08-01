@@ -63,16 +63,46 @@ if ! pgrep -f 'MacOS/TouchDesigner' >/dev/null 2>&1; then
 fi
 sleep "$LOAD_GRACE"
 
+# 2026-07-31 -- BLIND TYPING GUARD.
+#
+# This function types a long literal string and presses Return. It assumed
+# `activate` + `delay 0.4` had put TouchDesigner in front. That assumption is
+# not safe: activation is asynchronous, TD's splash "silently swallows
+# keystrokes" (this repo's own words), and during ACTIVATE the launcher opens
+# OBS, Serato and BUTT right after TD -- each stealing focus. The 2026-07-28
+# handoff records this path failing repeatedly with `_enforce_perform.py` never
+# executing, which means those keystrokes went SOMEWHERE ELSE.
+#
+# What gets typed is:
+#   exec(open('.../touchdesigner-dj-suite/touchdesigner/scripts/_enforce_perform.py').read())
+#
+# That string contains HYPHENS ("touchdesigner-dj-suite"). In Serato DJ, `-` is
+# the waveform zoom shortcut. A few of these landing in a frontmost Serato is a
+# straight-line explanation for a waveform zoomed to its extreme -- and for the
+# launcher appearing to have "changed a Serato preference" without any Apple
+# Event that does so existing anywhere in either repo.
+#
+# So: confirm TouchDesigner is ACTUALLY frontmost immediately before typing, and
+# abort if it is not. Not typing costs one enforcer attempt, which retries.
+# Typing into the wrong app costs the operator's Serato setup mid-show.
 send_enforce() {
   osascript >/dev/null 2>&1 <<AS
 tell application "TouchDesigner" to activate
-delay 0.4
+delay 0.8
 tell application "System Events"
+  set frontApp to name of first application process whose frontmost is true
+  if frontApp is not "TouchDesigner" then
+    do shell script "echo 'perform_enforcer: REFUSED to type -- frontmost was ' & quoted form of frontApp & ', not TouchDesigner' >&2"
+    return
+  end if
   tell process "TouchDesigner"
     try
       click menu item "Textport and DATs" of menu "Dialogs" of menu bar 1
     end try
     delay 0.5
+    -- Re-check after the menu click: opening the Textport can move focus.
+    set frontApp2 to name of first application process whose frontmost is true
+    if frontApp2 is not "TouchDesigner" then return
     keystroke "exec(open('${TD_SCRIPT}').read())"
     delay 0.2
     key code 36
