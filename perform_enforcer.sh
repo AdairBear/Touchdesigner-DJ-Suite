@@ -63,6 +63,77 @@ if ! pgrep -f 'MacOS/TouchDesigner' >/dev/null 2>&1; then
 fi
 sleep "$LOAD_GRACE"
 
+# ---------------------------------------------------------------------------
+# 2026-08-01 -- PHANTOM "newproject.toe" FIX. This gate is the whole reason
+# ACTIVATE was coming up with a blank default project instead of the canonical
+# .toe.
+#
+# The race, exactly:
+#
+#   ACTIVATE stage 1 opens start_tracker.command, which backgrounds THIS script
+#   (start_tracker.command:41). ACTIVATE stage 2 then opens the .toe.
+#
+#   This script waited for the TouchDesigner PROCESS (`pgrep`, line ~54) and
+#   then slept LOAD_GRACE=10s. But a TD process exists within a second or two of
+#   `open`, while a measured COLD LOAD of this project takes 142-203s. So the
+#   grace expired roughly 130-190 SECONDS before the project window existed, and
+#   send_enforce() ran `tell application "TouchDesigner" to activate` against a
+#   TD still sitting on its splash screen.
+#
+#   An `activate` sent to TouchDesigner with no front window is interpreted as
+#   "open a new empty document". That is the phantom blank project. The launcher
+#   knows this and guards its OWN activate behind a window-confirmation gate
+#   (agent/sequencer.py's _stage_td, and AppLauncher.confirmTDProjectLoaded) --
+#   but this script is launched as a side effect of stage 1 and raced ahead of
+#   both of them.
+#
+# The fix is to gate on the PROJECT, not the process: poll until TD reports a
+# window whose title carries a .toe path. System Events READS the window list;
+# it does not activate anything, so the probe itself cannot trigger the bug.
+#
+# Phantom titles are excluded explicitly. If a phantom is already open we must
+# not treat it as success -- that would enforce Perform Mode on the blank
+# project and report green.
+MAX_WAIT_PROJECT=240   # matches sequencer.TD_TIMEOUT_S; measured loads are 142-203s
+PROJECT_POLL=3
+
+td_project_window() {
+  osascript -e 'tell application "System Events" to tell process "TouchDesigner" to get name of every window' 2>/dev/null
+}
+
+echo "waiting up to ${MAX_WAIT_PROJECT}s for TD's PROJECT window (not just the process)"
+project_confirmed=0
+for _ in $(seq 1 $((MAX_WAIT_PROJECT / PROJECT_POLL))); do
+  titles=$(td_project_window)
+  case "$(printf '%s' "$titles" | tr '[:upper:]' '[:lower:]')" in
+    *newproject*|*untitled*)
+      echo "CRITICAL: TD already has a phantom/blank project open: $titles"
+      log_json critical td_phantom_project titles="$titles"
+      printf '{"active": false, "reason": "CRITICAL phantom-blank-project", "ts": %s}\n' \
+        "$(date +%s)" > "$HB.tmp" && mv -f "$HB.tmp" "$HB"
+      rm -f "$PIDFILE"
+      exit 1
+      ;;
+    *.toe*)
+      echo "project window confirmed: $titles"
+      log_json info td_project_window_confirmed titles="$titles"
+      project_confirmed=1
+      break
+      ;;
+  esac
+  sleep "$PROJECT_POLL"
+done
+
+if [ "$project_confirmed" -ne 1 ]; then
+  echo "CRITICAL: no TD project window within ${MAX_WAIT_PROJECT}s -- NOT sending activate"
+  echo "CRITICAL: (an activate now would make TD open a phantom blank project)"
+  log_json critical td_project_window_timeout max_wait_s="$MAX_WAIT_PROJECT"
+  printf '{"active": false, "reason": "CRITICAL project-window-never-appeared", "ts": %s}\n' \
+    "$(date +%s)" > "$HB.tmp" && mv -f "$HB.tmp" "$HB"
+  exit 1
+fi
+# ---------------------------------------------------------------------------
+
 # 2026-07-31 -- BLIND TYPING GUARD.
 #
 # This function types a long literal string and presses Return. It assumed
