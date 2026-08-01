@@ -40,6 +40,41 @@ BUF_A = "/tmp/djsam_bodymask_A.raw"
 BUF_B = "/tmp/djsam_bodymask_B.raw"
 SEQ_PATH = "/tmp/djsam_bodymask.seq"
 
+
+# --- Capture / model load knobs (2026-08-01) ---------------------------------
+# Staged after the live contention probe: on the show machine (i5-9600K, 6 cores,
+# no hyperthreading) this process was the single largest controllable CPU
+# consumer while the graphics froze under audio -- and the CPU was thermally
+# throttled to 50% speed at the time, so every cycle it takes costs double.
+#
+# Defaults below are the REDUCED values. Every one is env-overridable so the rig
+# can be tuned or reverted without editing code:
+#
+#   TRACKER_CAP_W / TRACKER_CAP_H   capture resolution   (was 1280x720)
+#   TRACKER_CAP_FPS                 capture frame rate   (was 30)
+#   TRACKER_MODEL_COMPLEXITY        MediaPipe Pose 0|1|2 (was 1)
+#
+# The defaults deliberately match MASK_W x MASK_H. The old pipeline captured
+# 1280x720 and then resized every frame down to 640x480 before publishing (see
+# the cv2.resize at the end of _process_segmentation), so 3/4 of each captured
+# frame was decoded, colour-converted and segmented purely to be discarded.
+# Capturing at the mask's own size removes that work instead of trading quality
+# for it -- the published mask is bit-for-bit the same size it always was.
+#
+# The BODY OUTLINE IS PRESERVED: it comes from the segmentation mask's largest
+# connected component (the SINGLE-SUBJECT FILTER), not from landmark precision.
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, "") or default)
+    except (TypeError, ValueError):
+        return default
+
+
+TRACKER_CAP_W = _env_int("TRACKER_CAP_W", MASK_W)
+TRACKER_CAP_H = _env_int("TRACKER_CAP_H", MASK_H)
+TRACKER_CAP_FPS = _env_int("TRACKER_CAP_FPS", 24)
+TRACKER_MODEL_COMPLEXITY = _env_int("TRACKER_MODEL_COMPLEXITY", 0)
+
 # --- Visual mode (flame / lightning) ---
 # Maps the human-readable mode name to the integer index TD's Switch TOP uses.
 # Broadcast on OSC so TouchDesigner can swap the body-outline shader live.
@@ -83,7 +118,7 @@ class MovementTracker:
         self.mask_path = mask_path
         self.mask_mmap = None
         self.mask_fh = None
-        self.buf_mmaps = None   # seqlock double-buffer (set in _init_mask_mmap)
+        self.buf_mmaps = None  # seqlock double-buffer (set in _init_mask_mmap)
         self.seq_mmap = None
         self.frame_counter = 0
         # Latest contour pixel count (set by _process_segmentation). Lets callers
@@ -106,7 +141,14 @@ class MovementTracker:
                 static_image_mode=False,
                 min_detection_confidence=0.5,
                 min_tracking_confidence=0.5,
-                model_complexity=1,
+                # 2026-08-01 load reduction: MediaPipe Pose complexity.
+                #   1 = "full"  (previous hardcoded value)
+                #   0 = "lite"  -- markedly cheaper per frame
+                # The outline is derived from the SEGMENTATION mask's largest
+                # connected component, not from landmark precision, so the lite
+                # model keeps the silhouette. Env-overridable so this can be
+                # tuned or reverted at the rig without a code edit.
+                model_complexity=TRACKER_MODEL_COMPLEXITY,
                 enable_segmentation=self.enable_segmentation,
                 smooth_segmentation=self.enable_segmentation,
                 smooth_landmarks=True,
@@ -117,10 +159,17 @@ class MovementTracker:
         self.osc_client = udp_client.SimpleUDPClient(osc_ip, osc_port)
 
         # Webcam
+        #
+        # 2026-08-01: capture was hardcoded 1280x720@30. Every frame was then
+        # resized down to MASK_W x MASK_H (640x480) before publishing --
+        # see _process_segmentation's final cv2.resize -- so three quarters of
+        # every captured pixel was decoded, colour-converted and segmented only
+        # to be thrown away. Capturing at the mask's own resolution removes that
+        # work outright rather than trading quality for it.
         self.cap = cv2.VideoCapture(camera_id)
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
-        self.cap.set(cv2.CAP_PROP_FPS, 30)
+        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, TRACKER_CAP_W)
+        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, TRACKER_CAP_H)
+        self.cap.set(cv2.CAP_PROP_FPS, TRACKER_CAP_FPS)
 
         # Movement tracking state for each person
         self.prev_positions: List[Dict[str, float]] = [
@@ -179,7 +228,7 @@ class MovementTracker:
         idx = self.frame_counter % 2
         b = self.buf_mmaps[idx]
         b.seek(0)
-        b.write(mask_array.tobytes())          # NO flush -- shared pages are enough for IPC
+        b.write(mask_array.tobytes())  # NO flush -- shared pages are enough for IPC
         # Publish AFTER the buffer write completes: reader picks buffer = seq % 2.
         self.seq_mmap.seek(0)
         self.seq_mmap.write(np.uint64(self.frame_counter).tobytes())
@@ -234,7 +283,9 @@ class MovementTracker:
         # can include a false-positive blob away from the DJ. Keep ONLY the
         # largest connected component (the actual person), dropping separate
         # clutter blobs so the outline tracks the DJ, never the jersey/chair.
-        n_lbl, labels, stats, _ = cv2.connectedComponentsWithStats(binary, connectivity=8)
+        n_lbl, labels, stats, _ = cv2.connectedComponentsWithStats(
+            binary, connectivity=8
+        )
         if n_lbl > 2:  # background(0) + more than one foreground blob
             largest = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
             binary = (labels == largest).astype(np.uint8)
