@@ -23,6 +23,77 @@ echo "Log:     $LOG"
 echo
 log_json info tracker_start
 
+# ---------------------------------------------------------------------------
+# ATOMIC SINGLE-START LOCK (2026-08-01)
+#
+# Two trackers were starting ~1s apart on the live rig:
+#
+#     14:15:46,059  Seqlock mask buffers ready
+#     14:15:47,018  Seqlock mask buffers ready
+#
+# The ACTIVATE sequencer starts the tracker as stage 1; the agent's poll loop
+# runs concurrently and, during the tracker's ~82s warmup, sees "not running"
+# and fires tracker_respawn -- a second invocation of THIS script. Both then
+# reached `kill_tracker` before either had written /tmp/.tracker_pid, so each
+# saw no predecessor, killed nothing, and started a tracker.
+#
+# The dedup logic was never wrong; it was not ATOMIC. `mkdir` is atomic on
+# POSIX -- exactly one concurrent caller can create the directory -- so it is
+# the lock primitive here rather than a check-then-write on a file, which is
+# the same race one level down.
+#
+# Two trackers is not cosmetic: they contend for the single camera (the loser
+# is refused and dies) and both mmap and write the SAME seqlock buffers, which
+# assume ONE writer. Interleaved writers can hand TD a torn frame and a
+# non-monotonic counter.
+#
+# The agent-side guards (remediation/tracker_respawn.py) close the known
+# invoker. This closes the race for ANY caller, at source.
+LOCKDIR="/tmp/.tracker_start.lock"
+LOCK_STALE_S=300   # tracker warmup is ~82s; 300s means a crashed run cannot wedge us
+
+if ! mkdir "$LOCKDIR" 2>/dev/null; then
+  lock_age=$(( $(date +%s) - $(stat -f %m "$LOCKDIR" 2>/dev/null || date +%s) ))
+  if [ "$lock_age" -gt "$LOCK_STALE_S" ]; then
+    echo "stale start-lock ($lock_age s old) -- taking it over"
+    log_json warn tracker_start_lock_stale age_s="$lock_age"
+    rmdir "$LOCKDIR" 2>/dev/null
+    mkdir "$LOCKDIR" 2>/dev/null || true
+  else
+    # Someone else is mid-start, or a tracker is already up. Either way this
+    # invocation must NOT add a second one. Exit 0: declining is the correct
+    # outcome, not an error.
+    if [ -f "$TRACKER_PID_FILE" ] \
+       && ps -p "$(cat "$TRACKER_PID_FILE" 2>/dev/null)" -o command= 2>/dev/null \
+          | grep -q '/movement_tracker\.py'; then
+      echo "a tracker is already running (pid $(cat "$TRACKER_PID_FILE")) -- nothing to do"
+      log_json info tracker_start_skipped reason=already_running
+    else
+      echo "another start_tracker.command is starting a tracker right now -- standing down"
+      log_json info tracker_start_skipped reason=concurrent_start
+    fi
+    exit 0
+  fi
+fi
+# Held for this script's lifetime, which is the tracker's lifetime (the tracker
+# runs in the foreground pipeline below). So while a tracker is alive the lock
+# is held, and a later invocation takes the "already running" branch above --
+# which is exactly the idempotency we want. When the tracker dies this script
+# exits, the trap frees the lock, and a genuine respawn can proceed.
+trap 'rmdir "$LOCKDIR" 2>/dev/null' EXIT
+
+# IDEMPOTENCY: even holding the lock, do nothing if a healthy tracker exists.
+# Covers the sequential case (A finishes, B starts a second later) that the
+# lock alone would serialise into a needless kill-and-restart.
+if [ -f "$TRACKER_PID_FILE" ] \
+   && ps -p "$(cat "$TRACKER_PID_FILE" 2>/dev/null)" -o command= 2>/dev/null \
+      | grep -q '/movement_tracker\.py'; then
+  echo "tracker already running (pid $(cat "$TRACKER_PID_FILE")) -- not starting a second"
+  log_json info tracker_start_skipped reason=already_running_locked
+  exit 0
+fi
+# ---------------------------------------------------------------------------
+
 # Kill any existing tracker so we don't double up on the camera.
 # Closure 3c (2026-07-29): this was `pkill -f 'python.*movement_tracker.py'`,
 # which matched the command line of any shell that merely quoted the pattern
