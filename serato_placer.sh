@@ -36,7 +36,26 @@ for i in $(seq 1 90); do
   sleep 1
 done
 
-osascript >/dev/null 2>&1 <<AS
+# 2026-08-01: place, then VERIFY, and retry if it did not stick.
+#
+# Measured on the rig: the placement itself works -- 1713 successful placements,
+# 0 "display not found", SAMSUNG resolved by name every time. Two real gaps
+# remained:
+#
+#   1. Serato opens on the MAIN display and stays there until this runs. The
+#      log shows "Serato window present after 71s", so there is over a minute
+#      where Serato is visibly on the wrong screen during ACTIVATE. That is the
+#      "Serato opens on the main screen" symptom.
+#   2. The script set the position and declared success without ever reading it
+#      back. Serato restores its own window geometry during startup, so a
+#      placement made while it is still initialising can be silently overwritten
+#      -- and nothing here would have noticed.
+#
+# So: place, read the position back, confirm the window's centre actually lands
+# inside SAMSUNG's rect, and retry a few times if not. Fail loud if it never
+# sticks rather than logging "placed" for a window sitting on the wrong screen.
+place_once() {
+  osascript >/dev/null 2>&1 <<AS
 tell application "System Events" to tell process "Serato DJ Pro"
   try
     set position of window 1 to {$SX, $SY}
@@ -46,5 +65,37 @@ tell application "System Events" to tell process "Serato DJ Pro"
   end try
 end tell
 AS
-echo "placed Serato on SAMSUNG at ($SX,$SY)"
-log_json info placer_done x="$SX" y="$SY"
+}
+
+read_position() {
+  osascript -e 'tell application "System Events" to tell process "Serato DJ Pro" to get position of window 1' 2>/dev/null
+}
+
+placed_ok=0
+for attempt in 1 2 3 4 5; do
+  place_once
+  sleep 2
+  pos=$(read_position)          # "x, y"
+  px=$(printf '%s' "$pos" | cut -d, -f1 | tr -d ' ')
+  py=$(printf '%s' "$pos" | cut -d, -f2 | tr -d ' ')
+  if [ -n "${px:-}" ] && [ -n "${py:-}" ]; then
+    # Centre-inside-rect, so a Serato-adjusted size/offset still counts.
+    cx=$(( px + SW / 2 ))
+    cy=$(( py + SH / 2 ))
+    if [ "$cx" -ge "$SX" ] && [ "$cx" -lt $(( SX + SW )) ] \
+       && [ "$cy" -ge "$SY" ] && [ "$cy" -lt $(( SY + SH )) ]; then
+      echo "placed Serato on SAMSUNG at ($px,$py) -- verified on attempt $attempt"
+      log_json info placer_done x="$px" y="$py" attempt="$attempt" verified=true
+      placed_ok=1
+      break
+    fi
+  fi
+  echo "attempt $attempt: Serato reported at (${px:-?},${py:-?}), not inside SAMSUNG -- retrying"
+  sleep 2
+done
+
+if [ "$placed_ok" -ne 1 ]; then
+  echo "CRITICAL: Serato would not stay on SAMSUNG after 5 attempts (last position: ${pos:-unknown})"
+  echo "CRITICAL: it is probably restoring its own window geometry -- move it by hand"
+  log_json critical placer_failed last_position="${pos:-unknown}"
+fi

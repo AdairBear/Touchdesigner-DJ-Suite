@@ -94,7 +94,48 @@ fi
 # workflow means TD's unsaved state is not wanted; an auto-incremented save
 # is the file-explosion problem, not a feature.
 kill_and_verify "TouchDesigner" "TouchDesigner"
-kill_and_verify "OBS" "OBS"
+# 2026-08-01 -- OBS gets a GRACEFUL quit first. This is why ACTIVATE was slow.
+#
+# The chain, measured:
+#
+#   this script SIGKILLed OBS (pkill -9 -x)
+#     -> SIGKILL is an unclean shutdown by definition
+#     -> next launch: "[Safe Mode] Unclean shutdown detected!" and a MODAL
+#     -> the agent's auto-dismiss ("Run Normally", by button name) needs
+#        Accessibility, which it does not have, so nothing clicks it
+#     -> OBS blocks on the modal, obs-websocket never loads, :4455 never binds
+#     -> the 90s bind and the 180s "OBS never bound its websocket" timeout
+#
+# 4 of the last 6 OBS logs open with that Safe Mode line, and the most recent
+# one contains NOTHING ELSE -- one line, then silence, because OBS is sitting on
+# the dialog. So CLOSE was manufacturing the next ACTIVATE's failure.
+#
+# The old comment here said OBS "ignored graceful quit under real show
+# conditions" (07-19), and the -9 was the response. That is still respected: the
+# force-kill remains, it just stops being the FIRST move. Give OBS a real chance
+# to write its clean-shutdown marker, then take it out if it refuses -- the same
+# graceful-then-force shape BUTT already gets for its icecast disconnect.
+if pgrep -x "OBS" >/dev/null 2>&1; then
+  echo "  asking OBS to quit gracefully (avoids next-launch Safe Mode)..."
+  osascript -e 'tell application "OBS" to quit' >/dev/null 2>&1
+  obs_clean=0
+  for _ in $(seq 1 10); do
+    if ! pgrep -x "OBS" >/dev/null 2>&1; then
+      echo "  OBS quit cleanly -- next launch will skip Safe Mode"
+      log_json info obs_clean_quit
+      obs_clean=1
+      break
+    fi
+    sleep 1
+  done
+  if [ "$obs_clean" -ne 1 ]; then
+    echo "  OBS ignored the graceful quit after 10s -- forcing (next launch WILL show Safe Mode)"
+    log_json warn obs_force_kill_after_graceful
+    kill_and_verify "OBS" "OBS"
+  fi
+else
+  kill_and_verify "OBS" "OBS"
+fi
 
 # BUTT stays graceful -- it disconnects from icecast on quit; a SIGKILL can
 # leave the mount point held server-side until it times out, breaking the
