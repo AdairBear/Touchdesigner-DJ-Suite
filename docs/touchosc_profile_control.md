@@ -5,7 +5,7 @@ Tap a button on the iPad or iPhone, the look changes **inside the running show**
 
 | | |
 |---|---|
-| Layout file | `~/Desktop/DJ_Profiles.tosc` (plus `DJ_Profiles.xml` fallback) |
+| Layout file | `~/Desktop/DJ_Profiles.tosc` (plus two fallbacks — see below) |
 | OSC port | **7400** (UDP) |
 | OSC addresses | `/dj/profile/UV_RAVE`, `/DEEP_LASER`, `/STROBE_ACID`, `/VAPOR_UV`, `/MONO_PULSE` |
 
@@ -36,17 +36,34 @@ to re-enter it** — worth setting a DHCP reservation before a real gig.
 
 ### 3. Get the layout onto the devices
 
-AirDrop `~/Desktop/DJ_Profiles.tosc` to the iPad and iPhone. Accept, and choose
+Regenerate with `./venv/bin/python python/make_touchosc_layout.py`. It writes
+three files to `~/Desktop`:
+
+| File | What it is |
+|---|---|
+| `DJ_Profiles.tosc` | **Try this one.** zlib-compressed, the real format. |
+| `DJ_Profiles_uncompressed.tosc` | Same document, no zlib wrapper. Try only if the first is rejected. |
+| `DJ_Profiles.xml` | Byte-identical to the uncompressed one, for reading. |
+
+AirDrop `DJ_Profiles.tosc` to the iPad and iPhone. Accept, and choose
 **Open with TouchOSC**. It appears in TouchOSC's layout list.
 
 ### 4. Point TouchOSC at the Mac
 
-In TouchOSC, open the connection settings (the gear / **OSC** tab) and set:
+**Host and port are not stored in the layout file** — TouchOSC keeps connection
+settings outside the document, so this step is required no matter how the layout
+got onto the device.
 
+In TouchOSC, tap the **chain-link (connections)** icon in the toolbar, open the
+**OSC** tab, and on **Connection 1** set:
+
+- **Type** — UDP
 - **Host** — the IP from step 2
-- **Port (outgoing)** — `7400`
-- **Protocol** — UDP
-- Leave incoming port at its default
+- **Send Port** — `7400`
+- Leave **Receive Port** at its default
+- Make sure the connection is **enabled**
+
+The layout's buttons send on connection **1**, so it must be that slot.
 
 Both devices need the **same wifi as the Mac**, and it must not be a "guest"
 network — those usually block device-to-device traffic, which is the single most
@@ -89,18 +106,60 @@ confirm both are on the same non-guest wifi, and check the Mac firewall
 
 ## If the .tosc won't open — build it by hand (5 min)
 
-I generated the `.tosc` but **could not load-test it** (that needs the TouchOSC
-app), so it may not open. The XML beside it is the same layout in readable form.
-If TouchOSC rejects the file, building it manually is quick and definitely works:
+The generated file's schema was verified against a real TouchOSC-editor layout,
+but it has still never been opened in the app. If it misbehaves, build it by
+hand — this path always works.
 
-1. TouchOSC → **+** → new layout.
-2. Add a **Button**. In its **OSC** tab set the address to `/dj/profile/UV_RAVE`,
-   value `1` on press.
-3. Set its label to `UV RAVE`.
-4. Duplicate it four times, changing address and label each time to
-   `DEEP_LASER`, `STROBE_ACID`, `VAPOR_UV`, `MONO_PULSE`.
+Do **[step 4 above](#4-point-touchosc-at-the-mac)** first; without the
+connection nothing is sent no matter how the buttons are built.
 
-That's the whole layout. The addresses are the only part that must be exact.
+**Build one button, then copy it.**
+
+1. In the layout browser, create a new document (**+** / **File → New**).
+   A canvas around **720 × 1280** matches the generated layout.
+2. **Long-press** an empty part of the canvas (right-click on desktop) →
+   **Create** → **Button**.
+3. With the button selected, in the **Properties** panel set:
+   - **Frame** — X `40`, Y `154`, W `640`, H `198`. Full-width and thumb-sized;
+     you will be hitting this in the dark without looking.
+   - **Type** — **Momentary**. (Not Toggle: a toggle sends `0` on the second tap
+     and the look would not re-apply.)
+   - **Color** — anything; pick per profile so the pad reads at a glance.
+   - **Name** — `UV_RAVE`. Optional, but it keeps the layout readable.
+4. Open the **Messages** panel, add an **OSC** message, and set:
+   - **Enabled** and **Send** on; **Connection 1** ticked.
+   - **Address** — the segments `dj`, `profile`, `UV_RAVE`, each a **CONSTANT**
+     partial, so the address reads **`/dj/profile/UV_RAVE`**.
+   - **Arguments** — one argument: type **VALUE**, value **x**,
+     conversion **FLOAT**.
+   - **Trigger** — var `x`, condition **ANY**. This sends `1` on press and `0`
+     on release; TouchDesigner ignores the `0`, so the look fires once.
+5. **Label it.** A TouchOSC button draws no text of its own, so the caption is a
+   separate control. Long-press → **Create** → **Label**, then:
+   - Set its **Frame** to the same X/Y/W/H as the button (`40, 154, 640, 198`).
+   - **Interactive** — **off**, and **Background** — **off**. Otherwise the
+     label swallows the tap and the button never fires.
+   - **Text Size** `34`, **Text Color** white (black over lime or cyan).
+   - In the **Values** panel, select the `text` value, type `UV RAVE` into
+     **Default**, and engage the **Default = Current** lock so the caption
+     survives loading.
+   - Make sure the label sits **above** the button in the layer order — later
+     controls draw on top.
+6. Select the button *and* its label, copy, and paste four times. For each copy
+   change only:
+
+   | Frame Y | Address (last segment) | Caption |
+   |---|---|---|
+   | `376` | `/dj/profile/DEEP_LASER` | `DEEP LASER` |
+   | `598` | `/dj/profile/STROBE_ACID` | `STROBE ACID` |
+   | `820` | `/dj/profile/VAPOR_UV` | `VAPOR UV` |
+   | `1042` | `/dj/profile/MONO_PULSE` | `MONO PULSE` |
+
+7. Save, then press **play** to leave edit mode and tap a button. The Textport
+   should print `[osc_profile] -> …`.
+
+The **addresses are the only part that must be exact** — everything else is
+cosmetic.
 
 ---
 
