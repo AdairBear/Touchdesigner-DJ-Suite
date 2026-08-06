@@ -678,6 +678,64 @@ register(Profile(
 DEFAULT_PROFILE = "UV_RAVE"
 
 
+#: Filename prefix marking a .toe as a per-profile TEST file. The canonical live
+#: show file (DJ_Graphics_LIVE.toe) deliberately does NOT carry this prefix, so
+#: profile_from_toe_name() returns None for it and the startup hook leaves it
+#: alone. That is the whole no-op guarantee, expressed as one string.
+TOE_PREFIX = "dj_launcher_"
+
+
+def profile_from_toe_name(name: str) -> Optional[str]:
+    """Extract the profile a .toe filename encodes, or None if it encodes none.
+
+    This is the switch that lets five copies of one .toe boot into five
+    different looks while sharing a single external startup hook: the hook asks
+    this function which profile the running project is, and does nothing when
+    the answer is None.
+
+    SAFETY: any name not starting with ``TOE_PREFIX`` returns None. The live
+    show file is ``DJ_Graphics_LIVE.toe``, which cannot match, so the hook is a
+    provable no-op for it. ``tests/test_dj_profile_toes.py`` asserts that
+    directly rather than trusting the reasoning.
+
+    TouchDesigner appends save increments (``dj_launcher_UV_RAVE.3.toe``), and
+    those must still resolve, so a trailing numeric increment is stripped.
+
+    Args:
+        name: A .toe filename or full path.
+
+    Returns:
+        The profile name if it is in the registry, else None. An unknown
+        profile also yields None rather than a name that would fail to apply.
+    """
+    if not name:
+        return None
+    stem = str(name).replace("\\", "/").split("/")[-1]
+    if stem.lower().endswith(".toe"):
+        stem = stem[: -len(".toe")]
+    if not stem.startswith(TOE_PREFIX):
+        return None
+    rest = stem[len(TOE_PREFIX):]
+    # Strip TD's ".N" save increment, but only when it is genuinely numeric --
+    # profile names themselves never contain a dot.
+    parts = rest.split(".")
+    if len(parts) > 1 and parts[-1].isdigit():
+        rest = ".".join(parts[:-1])
+    return rest if rest in PROFILES else None
+
+
+def toe_filename(profile_name: str) -> str:
+    """Build the .toe filename that boots into a given profile.
+
+    Args:
+        profile_name: Registry key.
+
+    Returns:
+        A filename such as ``dj_launcher_STROBE_ACID.toe``.
+    """
+    return "%s%s.toe" % (TOE_PREFIX, profile_name)
+
+
 def profile_plan(profile: Profile, with_energy: bool = True) -> Dict[str, Any]:
     """Describe every value a profile would write, without touching TD.
 

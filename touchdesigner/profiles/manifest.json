@@ -1,0 +1,42 @@
+{
+  "generated_from": "/Users/thomasadair/Desktop/DJ_Graphics_LIVE.toe",
+  "canonical_sha256": "8a1ffd5e2e76c8c936985f0704f8e16627312d839fb0bd0a68bd856d6499965a",
+  "note": "Each copy boots into its profile via the filename, read by td_startup_hooks -> dj_graphics_profiles.profile_from_toe_name(). The canonical file has no dj_launcher_ prefix, so the hook is a no-op for it.",
+  "profiles": [
+    {
+      "profile": "UV_RAVE",
+      "description": "The shipped look. Full-spectrum neon sweep, kick jumps colour, big snare pop.",
+      "file": "dj_launcher_UV_RAVE.toe",
+      "path": "/Users/thomasadair/projects/touchdesigner-dj-suite/touchdesigner/profiles/dj_launcher_UV_RAVE.toe",
+      "sha256": "8a1ffd5e2e76c8c936985f0704f8e16627312d839fb0bd0a68bd856d6499965a"
+    },
+    {
+      "profile": "DEEP_LASER",
+      "description": "Deep/rolling. Long cold trails, slow sweep, locked to lightning, energy-fed.",
+      "file": "dj_launcher_DEEP_LASER.toe",
+      "path": "/Users/thomasadair/projects/touchdesigner-dj-suite/touchdesigner/profiles/dj_launcher_DEEP_LASER.toe",
+      "sha256": "8a1ffd5e2e76c8c936985f0704f8e16627312d839fb0bd0a68bd856d6499965a"
+    },
+    {
+      "profile": "STROBE_ACID",
+      "description": "Peak time. Near-zero trails, violent kick flash and zoom, fast mode cycle.",
+      "file": "dj_launcher_STROBE_ACID.toe",
+      "path": "/Users/thomasadair/projects/touchdesigner-dj-suite/touchdesigner/profiles/dj_launcher_STROBE_ACID.toe",
+      "sha256": "8a1ffd5e2e76c8c936985f0704f8e16627312d839fb0bd0a68bd856d6499965a"
+    },
+    {
+      "profile": "VAPOR_UV",
+      "description": "Melodic/softer. Pink-violet wash, gentle kick, wide sweep, locked to fire.",
+      "file": "dj_launcher_VAPOR_UV.toe",
+      "path": "/Users/thomasadair/projects/touchdesigner-dj-suite/touchdesigner/profiles/dj_launcher_VAPOR_UV.toe",
+      "sha256": "8a1ffd5e2e76c8c936985f0704f8e16627312d839fb0bd0a68bd856d6499965a"
+    },
+    {
+      "profile": "MONO_PULSE",
+      "description": "Minimal/clean. Single cyan-to-white axis; all reactivity in brightness and glow.",
+      "file": "dj_launcher_MONO_PULSE.toe",
+      "path": "/Users/thomasadair/projects/touchdesigner-dj-suite/touchdesigner/profiles/dj_launcher_MONO_PULSE.toe",
+      "sha256": "8a1ffd5e2e76c8c936985f0704f8e16627312d839fb0bd0a68bd856d6499965a"
+    }
+  ]
+}
