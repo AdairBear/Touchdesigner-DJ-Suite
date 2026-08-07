@@ -86,6 +86,48 @@ class SystemLauncher:
         print("  ✓ OBS controller started")
         return process
     
+    def start_chat_bridge(self, extra_args=None):
+        """Start the audience chat bridge as a third OSC producer.
+
+        Opt-in, and deliberately so. The bridge needs an OpenAI key and YouTube
+        access; a normal show must start without either. It is also the only
+        component that lets strangers touch the visuals, so it should be a
+        thing Thomas turns on for a stream, not a thing that happens to him.
+
+        Enable with CHAT_BRIDGE=1 in the environment, or call this directly.
+
+        Args:
+            extra_args (list[str] | None): Extra flags for ``python -m
+                chat_bridge``, e.g. ``["--dry-run"]``.
+
+        Returns:
+            subprocess.Popen | None: The process, or None if it was not started.
+        """
+        if not os.environ.get("OPENAI_API_KEY"):
+            print("\n  ! Chat bridge skipped: OPENAI_API_KEY is not set")
+            return None
+
+        print("\nStarting audience chat bridge...")
+        env = dict(os.environ)
+        python_dir = str(self.project_root / "python")
+        env["PYTHONPATH"] = os.pathsep.join(
+            [python_dir, str(self.project_root / "touchdesigner" / "scripts"),
+             env.get("PYTHONPATH", "")]).rstrip(os.pathsep)
+
+        process = subprocess.Popen(
+            [sys.executable, "-m", "chat_bridge"] + list(extra_args or []),
+            cwd=python_dir,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE
+        )
+
+        self.processes.append(("Chat Bridge", process))
+        print("  ✓ Chat bridge started")
+        print("    Quitting it (or Ctrl-C here) stops all audience input;")
+        print("    the rig continues on its current validated look.")
+        return process
+
     def launch_touchdesigner(self):
         """Launch TouchDesigner project"""
         print("\nLaunching TouchDesigner...")
@@ -168,7 +210,10 @@ class SystemLauncher:
         
         # self.start_obs_controller()
         # time.sleep(1)
-        
+
+        if os.environ.get("CHAT_BRIDGE") == "1":
+            self.start_chat_bridge()
+
         self.launch_touchdesigner()
         
         # Monitor

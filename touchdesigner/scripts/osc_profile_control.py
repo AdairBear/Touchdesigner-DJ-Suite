@@ -23,6 +23,13 @@
 #   argument is treated as a release and ignored, so a look does not re-apply
 #   when your finger lifts.
 #
+#   Anything on this port that is NOT /dj/profile/* is offered to
+#   audience_control.py, which owns the /dj/audience/* namespace and /dj/panic.
+#   The split is deliberate and load-bearing: the audience kill switch gates
+#   only the audience namespace, so turning the room off never turns Thomas
+#   off. A tap here also arms a 60 s audience lockout, so his choice is not
+#   overwritten by a vote that was already in flight.
+#
 # FREEZE SAFETY (unchanged from the profile system)
 #   This adds NO audio tap and NO CHOP Execute DAT. It is a DAT Execute on an
 #   OSC In DAT, which fires only when a UDP packet arrives -- a few times a
@@ -150,9 +157,27 @@ def onTableChange(dat):
             args.append(raw)
     name = ctl.parse_osc_profile_message(address, args)
     if name is None:
+        # Not one of Thomas's buttons. It may be audience traffic, which is a
+        # different namespace and a different set of gates -- see
+        # audience_control.py. If that module is not installed, nothing here
+        # changes and audience packets are simply ignored.
+        try:
+            import audience_control as aud
+        except Exception:
+            return
+        aud.handle(address, args)
         return
     print("[osc_profile] ->", name)
     gp.apply_profile(name)
+    # His action wins, and keeps winning: arm the audience lockout so a vote
+    # already in flight cannot flip the look back eight seconds later.
+    try:
+        import audience_control as aud
+        import time as _time
+        aud.STATE.arm_lockout(_time.monotonic())
+        aud.STATE.current_profile = name
+    except Exception:
+        pass
     label = op("osc_profile_current")
     if label is not None:
         try:

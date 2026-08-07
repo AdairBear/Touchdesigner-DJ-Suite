@@ -1,0 +1,29 @@
+# Audience chat bridge -- python/chat_bridge/
+#
+# Deliberately SEPARATE from requirements.txt. The bridge runs in its own venv
+# as a sidecar process; the rig must be able to start a show without any of it
+# installed, and TouchDesigner must never import any of it.
+#
+#   python3 -m venv venv-chat
+#   ./venv-chat/bin/pip install -r requirements-chat.txt
+#   OPENAI_API_KEY=... ./venv-chat/bin/python -m chat_bridge --help
+#
+# There is no audio library here, and there must never be one. See
+# chat_bridge/config.py AUDIO_FORBIDDEN_IMPORTS and the test that enforces it.
+
+# Interpreter + moderation. One key, two endpoints; moderation is free.
+openai>=1.40.0
+
+# OSC out to TouchDesigner (port 7400) and the bridge's own control port (7401).
+python-osc>=1.8.0
+
+# Official YouTube Data API v3. An API key is enough for someone else's PUBLIC
+# stream; reading your OWN live chat is user-scoped and needs the OAuth client.
+google-api-python-client>=2.140.0
+google-auth>=2.33.0
+google-auth-oauthlib>=1.2.0
+
+# The escape hatch (--source fallback): no auth, no quota, unofficial.
+# Install from git -- the PyPI build (0.2.8, 2023) is stale.
+# Explicitly NOT pytchat, which has been archived and read-only since 2021.
+chat-downloader @ git+https://github.com/xenova/chat-downloader.git

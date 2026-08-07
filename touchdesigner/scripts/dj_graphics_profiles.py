@@ -59,6 +59,26 @@
 #   Neither invariant is left to the caller: both are applied inside the
 #   expression builders, so a bad profile value is clamped, not shipped.
 #
+#   3. THE AUDIENCE INVARIANT. When the chat bridge is running, an audience of
+#      strangers is writing numbers into `fx_audience`, a Constant CHOP. Every
+#      one of those numbers is consumed INSIDE the clamps above -- never
+#      alongside them, never after them. The structural guarantee is the same
+#      as invariant 1: `glow_size_expr(audience=True)` still emits a
+#      `min(..., cap)` whose cap is derived from GLOW_SIZE_HARD_CAP, with the
+#      audience term summed inside the min. A nudge of 999 becomes the cap.
+#
+#      The audience can therefore choose among visual states that already exist
+#      and have already been validated. The audience can never define a new
+#      one: no GLSL, no expression strings, no node operations, no raw RGB (a
+#      colour pop SNAPS between the profile's own validated tint and a named
+#      neon anchor, so it never traverses the banned brown hue band), and no
+#      audio anything. The photosensitivity ceiling -- STROBE_HZ_CAP and the
+#      one-shot durations in audience_control.py -- is not voteable.
+#
+#      The audience-aware forms are all OPT-IN (`audience=False` by default) so
+#      the shipped expressions are byte-identical to what the live rig runs
+#      today when the bridge is not installed.
+#
 # -----------------------------------------------------------------------------
 # SCOPE -- what this file deliberately does NOT touch
 #   * OBS. Nothing here talks to OBS. The "Radio DJ" scene is untouched; Syphon
@@ -95,6 +115,42 @@ GLOW_SIZE_HARD_CAP = 52.0
 GLOW_SIZE_BASE = 12.0
 #: Feedback multiply must stay strictly below 1.0 or trails accumulate forever.
 TRAIL_VALUEMULT_HARD_CAP = 0.97
+#: fx_kick_bright already reaches 1 + 8 = 9 at full kick on UV_RAVE. This caps
+#: the total, so the audience term has bounded headroom and cannot whiteout.
+KICK_FLASH_HARD_CAP = 14.0
+#: fx_kick_expand scale. A radial zoom past this reads as a glitch, not a punch.
+ZOOM_HARD_CAP = 1.6
+
+# --- Audience layer (see AUDIENCE INVARIANT above) ----------------------------
+#: Constant CHOP the chat bridge writes. Created by audience_control.py, never
+#: by apply_profile() -- this file still creates no nodes.
+AUDIENCE_CHOP = "fx_audience"
+#: The nudge channels, all zero-default, all clamped to [-1, 1] on write.
+AUDIENCE_CHANNELS = ("gain_glow", "gain_flash", "trail_bias", "shake",
+                     "zoom", "speed")
+#: The one-shot channels: a trigger stamp and a duration per effect, plus the
+#: snapped pop colour. A one-shot is a decaying pulse driven entirely by a
+#: parameter expression reading these, so it self-cancels with no per-frame
+#: Python and no timer node.
+AUDIENCE_PULSE_CHANNELS = ("pop_r", "pop_g", "pop_b", "pop_t0", "pop_dur",
+                           "strobe_t0", "strobe_dur", "white_t0", "white_dur")
+
+#: How far one unit of audience nudge may move each parameter. These are the
+#: audience's entire authority: every one of them is consumed INSIDE an
+#: existing clamp, so the sum with a full-drive kick still cannot breach a cap.
+AUDIENCE_GLOW_SPAN = 12.0       # px of blur size
+AUDIENCE_FLASH_SPAN = 3.0       # brightness multiplier
+AUDIENCE_TRAIL_SPAN = 0.04      # feedback multiply
+AUDIENCE_SHAKE_SPAN = 0.5       # fraction of the profile's own shake
+AUDIENCE_ZOOM_SPAN = 0.08       # fraction of frame
+AUDIENCE_SPEED_SPAN = 0.5       # palette sweep rate, +/- half
+#: Extra brightness a STROBE_BURST or WHITEOUT may add, before the flash cap.
+AUDIENCE_STROBE_GAIN = 4.0
+AUDIENCE_WHITEOUT_GAIN = 5.0
+#: Strobe flash rate. WCAG 2.3.1's general threshold is more than three flashes
+#: in any one second; two sits comfortably under it. This number has no OSC
+#: address and no chat phrasing that changes it. See the AUDIENCE INVARIANT.
+STROBE_HZ_CAP = 2.0
 
 # --- Neon/UV palette guard ---------------------------------------------------
 #: Hue band (degrees) that muddied to brown in the old CYAN->ORANGE->PURPLE
@@ -318,7 +374,116 @@ SNARE = "op('fx_snare_env')['high']"
 ENERGY = "op('fx_master')['bass']"
 
 
-def glow_size_expr(profile: Profile) -> str:
+def aud(channel: str) -> str:
+    """Reference one fx_audience channel from a parameter expression.
+
+    Args:
+        channel: A member of AUDIENCE_CHANNELS or AUDIENCE_PULSE_CHANNELS.
+
+    Returns:
+        A TD expression fragment.
+
+    Raises:
+        KeyError: On an unknown channel. Raising here means a typo fails at
+            build time rather than binding a dead reference at the rig.
+    """
+    if channel not in AUDIENCE_CHANNELS + AUDIENCE_PULSE_CHANNELS:
+        raise KeyError("no such fx_audience channel: %r" % channel)
+    return "op('%s')['%s']" % (AUDIENCE_CHOP, channel)
+
+
+def aud_term(channel: str, span: float) -> str:
+    """Build one clamped audience term.
+
+    SAFETY: the channel value is clamped to [-1, 1] here, in the expression
+    itself, before it is scaled. That is the fourth and last of the four
+    independent clamps a nudge passes through (bridge validator, bridge
+    arbiter, TD OSC handler, and this). Each is sufficient alone; the point of
+    having four is that no single one has to be trusted.
+
+    Args:
+        channel: fx_audience channel name.
+        span: How far one full unit of nudge may move the parameter.
+
+    Returns:
+        A TD expression fragment worth at most ``span`` in absolute value.
+    """
+    return "max(-1, min(1, %s)) * %g" % (aud(channel), span)
+
+
+def pulse_gate_expr(t0_channel: str, dur_channel: str) -> str:
+    """Build a 0/1 gate that is 1 only inside a one-shot's window.
+
+    A steep clamped ramp rather than a comparison, so the expression uses only
+    arithmetic and ``min``/``max`` and is provably bounded to [0, 1]. The slope
+    is steep enough that the transition through intermediate values lasts under
+    a microsecond of show time, which matters for the colour snap: an
+    intermediate value there would be an unvalidated colour.
+
+    The window self-cancels. Nothing has to switch it off, so a bridge that
+    dies mid-burst leaves a one-shot that expires on its own.
+
+    Args:
+        t0_channel: Channel holding ``absTime.seconds`` at the trigger.
+        dur_channel: Channel holding the effect's duration in seconds.
+
+    Returns:
+        A TD expression fragment in [0, 1].
+    """
+    remaining = "(%s - (absTime.seconds - %s))" % (aud(dur_channel), aud(t0_channel))
+    return "min(1, max(0, %s * 1e6))" % remaining
+
+
+def pulse_decay_expr(t0_channel: str, dur_channel: str) -> str:
+    """Build a linear decay envelope over a one-shot's window.
+
+    Args:
+        t0_channel: Channel holding the trigger stamp.
+        dur_channel: Channel holding the duration.
+
+    Returns:
+        A TD expression fragment falling 1 -> 0 across the window, then 0.
+    """
+    remaining = "(%s - (absTime.seconds - %s))" % (aud(dur_channel), aud(t0_channel))
+    return "min(1, max(0, %s / max(%s, 0.001)))" % (remaining, aud(dur_channel))
+
+
+def strobe_term_expr() -> str:
+    """Build the STROBE_BURST contribution to the kick-flash brightness.
+
+    CEILING: the flash rate is the module constant STROBE_HZ_CAP, baked into
+    the expression as a literal. It is not read from a channel, so there is no
+    value the audience -- or a compromised bridge -- can write that changes it.
+    Duration and spacing are enforced separately, twice, in audience_control.py
+    and in the bridge's arbiter.
+
+    Returns:
+        A TD expression fragment, zero outside the burst window.
+    """
+    gate = pulse_gate_expr("strobe_t0", "strobe_dur")
+    # Note the factor of two: one FLASH is an on half-cycle plus an off half-
+    # cycle, so a square wave of N flashes per second toggles 2N times per
+    # second. Getting this wrong is how a "2 Hz" cap becomes 4 flashes a second
+    # and crosses the threshold it was written to stay under.
+    flash = "(int(absTime.seconds * %g) %% 2)" % (2.0 * STROBE_HZ_CAP)
+    return "%s * %s * %g" % (gate, flash, AUDIENCE_STROBE_GAIN)
+
+
+def whiteout_term_expr() -> str:
+    """Build the WHITEOUT contribution to the kick-flash brightness.
+
+    A single ramped flash rather than a repeating one, so it is bounded by
+    duration and spacing alone -- one flash cannot cross a flashes-per-second
+    threshold.
+
+    Returns:
+        A TD expression fragment, zero outside the window.
+    """
+    return "%s * %g" % (pulse_decay_expr("white_t0", "white_dur"),
+                        AUDIENCE_WHITEOUT_GAIN)
+
+
+def glow_size_expr(profile: Profile, audience: bool = False) -> str:
     """Build the outline_glow blur-size expression, always clamped.
 
     SAFETY: this function has no branch that emits an unclamped size. The kick
@@ -326,8 +491,13 @@ def glow_size_expr(profile: Profile) -> str:
     from GLOW_SIZE_HARD_CAP, so the blur can never explode under a loud input.
     That clamp is the live-proven half of the freeze fix -- see invariant 1.
 
+    The audience form adds its term INSIDE that same min, and adds a ``max(0,
+    ...)`` so a fully negative nudge cannot drive the size below zero either.
+    Both bounds hold for every combination of kick, snare and nudge.
+
     Args:
         profile: Source of the kick/snare gains.
+        audience: True to include the clamped fx_audience term.
 
     Returns:
         A TD parameter expression string.
@@ -337,8 +507,11 @@ def glow_size_expr(profile: Profile) -> str:
     # is never the only thing standing between us and a runaway blur.
     kick_gain = min(profile.glow_kick_gain, headroom)
     snare_gain = min(profile.glow_snare_gain, headroom)
-    return "%g + min(%s*%g + %s*%g, %g)" % (
-        GLOW_SIZE_BASE, KICK, kick_gain, SNARE, snare_gain, headroom,
+    drive = "%s*%g + %s*%g" % (KICK, kick_gain, SNARE, snare_gain)
+    if not audience:
+        return "%g + min(%s, %g)" % (GLOW_SIZE_BASE, drive, headroom)
+    return "%g + min(max(%s + %s, 0), %g)" % (
+        GLOW_SIZE_BASE, drive, aud_term("gain_glow", AUDIENCE_GLOW_SPAN), headroom,
     )
 
 
@@ -354,50 +527,81 @@ def outline_bright_expr(profile: Profile) -> str:
     return "%g + %s * %g" % (profile.outline_base_bright, KICK, profile.outline_kick_gain)
 
 
-def kick_flash_expr(profile: Profile) -> str:
+def kick_flash_expr(profile: Profile, audience: bool = False) -> str:
     """Build the additive kick-flash brightness expression.
+
+    This is the node the two brightness one-shots ride, so the audience form
+    carries three terms -- a nudge, the strobe burst and the whiteout -- and
+    wraps the lot in ``min(..., KICK_FLASH_HARD_CAP)``. The photosensitivity
+    ceiling lives partly here: the strobe term's flash rate is a literal baked
+    in from STROBE_HZ_CAP, not a value read from any channel.
 
     Args:
         profile: Source of the flash gain.
+        audience: True to include the clamped fx_audience terms.
 
     Returns:
         A TD parameter expression string.
     """
-    return "1 + %s * %g" % (KICK, profile.kick_flash_gain)
+    if not audience:
+        return "1 + %s * %g" % (KICK, profile.kick_flash_gain)
+    return "min(1 + %s * %g + max(0, %s) + %s + %s, %g)" % (
+        KICK, profile.kick_flash_gain,
+        aud_term("gain_flash", AUDIENCE_FLASH_SPAN),
+        strobe_term_expr(), whiteout_term_expr(), KICK_FLASH_HARD_CAP,
+    )
 
 
-def zoom_expr(profile: Profile) -> str:
+def zoom_expr(profile: Profile, audience: bool = False) -> str:
     """Build the radial scale-punch expression for the kick expand stage.
 
     Args:
         profile: Source of the zoom gain.
+        audience: True to include the clamped fx_audience term.
 
     Returns:
         A TD parameter expression string.
     """
-    return "1 + %s * %g" % (KICK, profile.zoom_kick_gain)
+    if not audience:
+        return "1 + %s * %g" % (KICK, profile.zoom_kick_gain)
+    return "min(max(1 + %s * %g + %s, 1), %g)" % (
+        KICK, profile.zoom_kick_gain,
+        aud_term("zoom", AUDIENCE_ZOOM_SPAN), ZOOM_HARD_CAP,
+    )
 
 
-def shake_expr(profile: Profile, axis: int, out_w: int = 1280) -> str:
+def shake_expr(profile: Profile, axis: int, out_w: int = 1280,
+               audience: bool = False) -> str:
     """Build one axis of the snare shake expression.
 
     Transform TOP translate is a fraction of resolution, so the pixel figure is
     divided by width. The noise channel gives the shake a direction that is not
     correlated between axes.
 
+    The audience form scales the whole term rather than adding to it, so shake
+    stays proportional to the snare: the audience can turn the profile's own
+    shake up or down within a bounded factor, not introduce shake that is not
+    driven by the music.
+
     Args:
         profile: Source of the shake magnitude.
         axis: 0 for x, 1 for y.
         out_w: Output width in pixels, used to convert px to a fraction.
+        audience: True to include the clamped fx_audience factor.
 
     Returns:
         A TD parameter expression string.
     """
     frac = profile.shake_snare_px / float(out_w)
-    return "%s * op('fx_noise')[%d] * %g" % (SNARE, axis, frac)
+    if not audience:
+        return "%s * op('fx_noise')[%d] * %g" % (SNARE, axis, frac)
+    return "%s * op('fx_noise')[%d] * %g * max(0, 1 + %s)" % (
+        SNARE, axis, frac, aud_term("shake", AUDIENCE_SHAKE_SPAN),
+    )
 
 
-def trail_valuemult_expr(profile: Profile, with_energy: bool = True) -> str:
+def trail_valuemult_expr(profile: Profile, with_energy: bool = True,
+                         audience: bool = False) -> str:
     """Build the feedback decay expression, hard-clamped below runaway.
 
     SAFETY: a Feedback TOP whose value multiply reaches 1.0 accumulates without
@@ -413,6 +617,10 @@ def trail_valuemult_expr(profile: Profile, with_energy: bool = True) -> str:
         profile: Source of the persistence base and energy gain.
         with_energy: False when fx_master is absent from the network, which
             drops the energy term rather than emitting a broken reference.
+        audience: True to include the clamped fx_audience bias term. It is
+            summed INSIDE the same min(), so no amount of audience enthusiasm
+            can reach 1.0, and a floor at 0 keeps a fully negative nudge from
+            producing a negative multiply.
 
     Returns:
         A TD parameter expression string.
@@ -421,7 +629,40 @@ def trail_valuemult_expr(profile: Profile, with_energy: bool = True) -> str:
     terms = "%g - op('fx_lfo_decay')['chan1'] * 0.03" % base
     if with_energy and profile.trail_energy_gain > 0.0:
         terms += " + (%s - 1.0) * %g" % (ENERGY, profile.trail_energy_gain)
-    return "min(%s, %g)" % (terms, TRAIL_VALUEMULT_HARD_CAP)
+    if not audience:
+        return "min(%s, %g)" % (terms, TRAIL_VALUEMULT_HARD_CAP)
+    terms += " + %s" % aud_term("trail_bias", AUDIENCE_TRAIL_SPAN)
+    return "min(max(%s, 0), %g)" % (terms, TRAIL_VALUEMULT_HARD_CAP)
+
+
+#: fire_tint colour components, in parameter order.
+_TINT_PARS = ("colorr", "colorg", "colorb")
+_POP_CHANNELS = ("pop_r", "pop_g", "pop_b")
+
+
+def fire_tint_expr(profile: Profile, index: int) -> str:
+    """Build one component of the audience-aware fire tint.
+
+    PALETTE GUARD: this SNAPS rather than crossfades. The gate is 0 or 1, so
+    the emitted colour is either the profile's own validated ``fire_tint`` or a
+    named neon anchor the bridge resolved -- never a mixture. That matters,
+    because a naive RGB lerp between (for example) STROBE_ACID's tint and PINK
+    passes straight through the 15-50 degree hue band that ``is_brown()``
+    exists to ban. A snap cannot land in it. The behaviour is asserted for
+    every (profile, anchor) pair rather than argued for.
+
+    Args:
+        profile: Source of the base tint.
+        index: 0, 1 or 2 for r, g, b.
+
+    Returns:
+        A TD parameter expression string, bounded to [0, 1].
+    """
+    base = profile.fire_tint[index]
+    gate = pulse_gate_expr("pop_t0", "pop_dur")
+    return "max(0, min(1, %g + (%s - %g) * (%s)))" % (
+        base, aud(_POP_CHANNELS[index]), base, gate,
+    )
 
 
 def mode_index_expr(profile: Profile) -> str:
@@ -443,7 +684,24 @@ def mode_index_expr(profile: Profile) -> str:
     return "int(absTime.seconds / %g) %% 2" % profile.mode_dwell_s
 
 
-def palette_engine_code(profile: Profile) -> str:
+#: Inserted into the palette engine when the audience layer is present. Reads
+#: one clamped scalar and scales the sweep rate by it, between 2/3x and 2x.
+#: Note the deliberate shape: this is a Script CHOP onCook reading a CHOP
+#: channel, exactly like the kick and snare reads above it. It is NOT generated
+#: from an audience-supplied string -- the audience's contribution is a number
+#: at runtime, and there is no path by which it becomes source text.
+_AUDIENCE_SPEED_SNIPPET = (
+    "    _aud = op('%s')\n"
+    "    _spd = 1.0\n"
+    "    if _aud is not None:\n"
+    "        try:\n"
+    "            _spd = 1.0 + max(-%g, min(%g, _aud['speed'].eval()))\n"
+    "        except Exception:\n"
+    "            _spd = 1.0\n"
+)
+
+
+def palette_engine_code(profile: Profile, audience: bool = False) -> str:
     """Build the Script CHOP source that sweeps and pops the palette.
 
     Structurally identical to the shipped rave engine, but parameterised: the
@@ -456,10 +714,20 @@ def palette_engine_code(profile: Profile) -> str:
 
     Args:
         profile: Source of period, pop depth and kick-advance behaviour.
+        audience: True to scale the sweep rate by the fx_audience speed
+            channel. The rate change moves the sweep phase, so a speed nudge
+            lands as a colour jump followed by the new rate -- which is the
+            same gesture a kick already makes, and reads as intentional.
 
     Returns:
         Python source for the fx_palette_engine callback DAT.
     """
+    speed_read = ""
+    speed_apply = ""
+    if audience:
+        speed_read = _AUDIENCE_SPEED_SNIPPET % (
+            AUDIENCE_CHOP, AUDIENCE_SPEED_SPAN, AUDIENCE_SPEED_SPAN)
+        speed_apply = " * _spd"
     return (
         "# fx_palette_engine -- generated by dj_graphics_profiles.py\n"
         "# profile: %s\n"
@@ -499,7 +767,8 @@ def palette_engine_code(profile: Profile) -> str:
         "        except Exception:\n"
         "            sv = se[0].eval()\n"
         "    bright = 1.0 + sv * POP\n"
-        "    pos = (absTime.seconds / PERIOD) + _kick_jump\n"
+        "%s"
+        "    pos = (absTime.seconds%s / PERIOD) + _kick_jump\n"
         "    idx = int(pos) %% n\n"
         "    nxt = (idx + 1) %% n\n"
         "    f = pos - int(pos)\n"
@@ -514,7 +783,7 @@ def palette_engine_code(profile: Profile) -> str:
         "        scriptOp.appendChan(nm).vals = [(a + (b - a) * f) * bright]\n"
         "    return\n"
     ) % (profile.name, "True" if profile.kick_advances_palette else "False",
-         profile.palette_period_s, profile.snare_pop)
+         profile.palette_period_s, profile.snare_pop, speed_read, speed_apply)
 
 
 def palette_rows(profile: Profile) -> List[List[str]]:
@@ -736,7 +1005,8 @@ def toe_filename(profile_name: str) -> str:
     return "%s%s.toe" % (TOE_PREFIX, profile_name)
 
 
-def profile_plan(profile: Profile, with_energy: bool = True) -> Dict[str, Any]:
+def profile_plan(profile: Profile, with_energy: bool = True,
+                 audience: bool = False) -> Dict[str, Any]:
     """Describe every value a profile would write, without touching TD.
 
     This is what ``show_profile()`` prints and what the tests assert against, so
@@ -745,28 +1015,35 @@ def profile_plan(profile: Profile, with_energy: bool = True) -> Dict[str, Any]:
     Args:
         profile: The profile to describe.
         with_energy: Whether fx_master is available for the trail energy term.
+        audience: Whether the fx_audience CHOP is present, in which case every
+            builder emits its audience-aware form. Absent the CHOP the plan is
+            byte-identical to what the rig runs without the chat bridge.
 
     Returns:
         A dict of node -> {parameter: value-or-expression}.
     """
+    tint: Dict[str, Any]
+    if audience:
+        tint = {par: fire_tint_expr(profile, i)
+                for i, par in enumerate(_TINT_PARS)}
+    else:
+        tint = {par: profile.fire_tint[i] for i, par in enumerate(_TINT_PARS)}
     return {
         "fx_palette_table": {"rows": palette_rows(profile)},
-        "fx_palette_engine_cb": {"text": palette_engine_code(profile)},
+        "fx_palette_engine_cb": {"text": palette_engine_code(profile, audience)},
         "fx_palette_mono": {"saturationmult": profile.mono_saturation},
         "outline_level": {"brightness1": outline_bright_expr(profile)},
-        "outline_glow": {"size": glow_size_expr(profile)},
-        "fx_kick_bright": {"brightness1": kick_flash_expr(profile)},
-        "fx_kick_expand": {"scale": zoom_expr(profile)},
+        "outline_glow": {"size": glow_size_expr(profile, audience)},
+        "fx_kick_bright": {"brightness1": kick_flash_expr(profile, audience)},
+        "fx_kick_expand": {"scale": zoom_expr(profile, audience)},
         "fx_snare_shake": {
-            "tx": shake_expr(profile, 0),
-            "ty": shake_expr(profile, 1),
+            "tx": shake_expr(profile, 0, audience=audience),
+            "ty": shake_expr(profile, 1, audience=audience),
         },
-        "fx_trail_hsv": {"valuemult": trail_valuemult_expr(profile, with_energy)},
-        "fire_tint": {
-            "colorr": profile.fire_tint[0],
-            "colorg": profile.fire_tint[1],
-            "colorb": profile.fire_tint[2],
+        "fx_trail_hsv": {
+            "valuemult": trail_valuemult_expr(profile, with_energy, audience),
         },
+        "fire_tint": tint,
         "visual_switch": {"index": mode_index_expr(profile)},
     }
 
@@ -983,6 +1260,16 @@ def apply_profile(name: str = DEFAULT_PROFILE) -> Dict[str, Any]:
     if not has_energy:
         report.append("WARN fx_master absent -- trail energy term disabled")
 
+    # fx_audience only exists once audience_control.install_audience_control()
+    # has run. Its ABSENCE is the strongest possible kill switch: without the
+    # CHOP, every expression below is emitted in its original form and there is
+    # no term for the audience to write into at all. Same discipline as
+    # fx_master -- detect, do not assume.
+    has_audience = _resolve(AUDIENCE_CHOP) is not None
+    if has_audience:
+        report.append("NOTE %s present -- audience terms bound inside the clamps"
+                      % AUDIENCE_CHOP)
+
     missing: List[str] = []
 
     def _need(node_name: str) -> Optional[Any]:
@@ -1007,7 +1294,7 @@ def apply_profile(name: str = DEFAULT_PROFILE) -> Dict[str, Any]:
         cb = _need("fx_palette_engine_cb")
         if cb is None:
             return
-        cb.text = palette_engine_code(prof)
+        cb.text = palette_engine_code(prof, has_audience)
         engine = _resolve("fx_palette_engine")
         if engine is not None:
             engine.cook(force=True)
@@ -1036,20 +1323,21 @@ def apply_profile(name: str = DEFAULT_PROFILE) -> Dict[str, Any]:
         node = _need("outline_glow")
         if node is not None:
             # Always the clamped form. See invariant 1.
-            _set_expr(node, ["size"], glow_size_expr(prof), report)
+            _set_expr(node, ["size"], glow_size_expr(prof, has_audience), report)
     _step("glow", _glow, report)
 
     def _flash() -> None:
         node = _need("fx_kick_bright")
         if node is not None:
-            _set_expr(node, ["brightness1", "brightness"], kick_flash_expr(prof), report)
+            _set_expr(node, ["brightness1", "brightness"],
+                      kick_flash_expr(prof, has_audience), report)
     _step("kick_flash", _flash, report)
 
     def _zoom() -> None:
         node = _need("fx_kick_expand")
         if node is None:
             return
-        expr = zoom_expr(prof)
+        expr = zoom_expr(prof, has_audience)
         for a, b in (("sx", "sy"), ("scalex", "scaley")):
             if hasattr(node.par, a) and hasattr(node.par, b):
                 _set_expr(node, [a], expr, report)
@@ -1063,8 +1351,10 @@ def apply_profile(name: str = DEFAULT_PROFILE) -> Dict[str, Any]:
         if node is None:
             report.append("WARN fx_snare_shake absent (GLSL split mode?) -- skipping")
             return
-        _set_expr(node, ["tx", "translatex"], shake_expr(prof, 0), report)
-        _set_expr(node, ["ty", "translatey"], shake_expr(prof, 1), report)
+        _set_expr(node, ["tx", "translatex"],
+                  shake_expr(prof, 0, audience=has_audience), report)
+        _set_expr(node, ["ty", "translatey"],
+                  shake_expr(prof, 1, audience=has_audience), report)
     _step("shake", _shake, report)
 
     def _trails() -> None:
@@ -1072,14 +1362,21 @@ def apply_profile(name: str = DEFAULT_PROFILE) -> Dict[str, Any]:
         if node is not None:
             # Always the clamped form. See invariant 2.
             _set_expr(node, ["valuemult", "valuemultiply"],
-                      trail_valuemult_expr(prof, has_energy), report)
+                      trail_valuemult_expr(prof, has_energy, has_audience),
+                      report)
     _step("trails", _trails, report)
 
     def _fire() -> None:
         node = _need("fire_tint")
         if node is None:
             return
-        for par, val in zip(("colorr", "colorg", "colorb"), prof.fire_tint):
+        if has_audience:
+            # An expression, so a COLOR_POP can snap the tint and snap back
+            # without any per-frame Python. See fire_tint_expr's palette guard.
+            for i, par in enumerate(_TINT_PARS):
+                _set_expr(node, [par], fire_tint_expr(prof, i), report)
+            return
+        for par, val in zip(_TINT_PARS, prof.fire_tint):
             _set_val(node, [par], val, report)
     _step("fire_tint", _fire, report)
 
