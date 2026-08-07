@@ -23,6 +23,12 @@ google-api-python-client>=2.140.0
 google-auth>=2.33.0
 google-auth-oauthlib>=1.2.0
 
+# The Kniteforce site's own chat widget (--source embedded), which speaks
+# Socket.IO v4. Read-only and anonymous: the client emits exactly one event
+# ("join") and holds no token. chat-downloader does not support this provider,
+# which is why there is a custom reader at all.
+python-socketio[client]>=5.11.0
+
 # The escape hatch (--source fallback): no auth, no quota, unofficial.
 # Install from git -- the PyPI build (0.2.8, 2023) is stale.
 # Explicitly NOT pytchat, which has been archived and read-only since 2021.

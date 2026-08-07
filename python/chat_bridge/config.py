@@ -189,6 +189,19 @@ LOG_PATH = os.environ.get(
         os.path.abspath(__file__)))), "logs", "chat_bridge.ndjson"),
 )
 
+# --- Embedded Chat (the Kniteforce Radio site widget) -------------------------
+#: The third-party widget the Kniteforce site embeds. Socket.IO v4 over
+#: websocket; reads anonymously, which is the only mode this bridge ever uses.
+#: There is deliberately no token, cookie or credential setting here: the
+#: source is receive-only and must never be able to authenticate or post.
+EMBEDDED_CHAT_URL = os.environ.get(
+    "CHAT_BRIDGE_EMBEDDED_URL", "https://www.embedded-chat.com")
+#: Room/channel id observed on kniteforceradio.com.
+EMBEDDED_CHAT_ROOM = os.environ.get("CHAT_BRIDGE_EMBEDDED_ROOM", "292041")
+#: The socket thread pushes into a bounded buffer. Unbounded would be a slow
+#: memory leak in --capture-raw, where nothing ever drains it.
+EMBEDDED_CHAT_BUFFER_MAX = 500
+
 # --- YouTube quota ------------------------------------------------------------
 #: Daily allocation for the whole Cloud project.
 YT_QUOTA_DAILY = 10000

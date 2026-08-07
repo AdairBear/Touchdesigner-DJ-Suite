@@ -153,6 +153,84 @@ archived and read-only since 2021.)
 
 ---
 
+## The Kniteforce site chat (`--source embedded`)
+
+The chat on the Kniteforce Radio site is a third-party widget — **Embedded
+Chat** (`embedded-chat.com`), room `292041`, Socket.IO v4 over websocket. It
+reads anonymously: signed out, empty token, `{connected: true, anonymous:
+true}`. `chat-downloader` does not support the provider, so there is a custom
+reader, `EmbeddedChatSource`.
+
+It is **receive-only by construction**. The client emits exactly one event in
+its whole life — `join` with the room id — and holds no token, cookie or
+credential. `tests/test_embedded_chat_source.py::TestReceiveOnly` asserts that
+against the socket's emit log, not against this paragraph.
+
+```bash
+# site chat only
+../venv-chat/bin/python -m chat_bridge --source embedded --dry-run
+
+# site chat AND YouTube into one bridge
+../venv-chat/bin/python -m chat_bridge --source merge --video-id XXXX --dry-run
+```
+
+`--source merge` wraps both readers in a `MergeSource`. Each message is tagged
+with the reader it came from, and its ids are namespaced (`embedded-chat:...`,
+`youtube:...`) so two platforms cannot collide in the dedupe table or in the
+per-viewer cooldowns. A reader that dies — failed connect, exhausted quota,
+erroring poll — is retired with an alert and **the other one keeps running**.
+Every gate downstream is unchanged; a merged source is just a source.
+
+### ⚠️ Before trusting it live: lock the field mapping
+
+**The provider's `message` payload schema is not confirmed.** The site's own
+handler is minified, and the handshake was read off the wire but the payload
+shape never was. The reader therefore tries a list of candidate keys
+(`message`/`text`/`body`/`content`/`msg` for the body, `user`/`author`/`name`/
+`nick` for the author) and **logs every fallback it has to make**. It does not
+guess quietly.
+
+To replace the guess with a fact, run the capture during a busy show:
+
+```bash
+cd python
+../venv-chat/bin/python -m chat_bridge \
+    --source embedded --capture-raw ../logs/embedded_raw.json
+```
+
+- Needs **no** `OPENAI_API_KEY` — capture mode short-circuits before every
+  other check.
+- Builds **no** pipeline: no moderation, no interpreter, no arbiter, no
+  emitter, no socket to TouchDesigner. The four gates are not weakened here,
+  they are simply not in the process.
+- Leave it running ~15 minutes of real chat, then `Ctrl-C` (or add
+  `--duration 900`).
+
+It writes each raw payload to the file as pretty JSON, and on exit prints a
+frequency table of the top-level keys it saw, flagging timestamp candidates.
+Then:
+
+1. Open `logs/embedded_raw.json` and read three or four real messages.
+2. Edit the `EMBEDDED_*_KEYS` tuples at the top of the Embedded Chat section in
+   `python/chat_bridge/sources.py` down to the keys that actually appeared.
+3. Delete the `TODO(field-mapping)` block above them.
+4. Add a real payload to `tests/test_embedded_chat_source.py::TestFieldMapping`
+   so the confirmed schema is pinned by a test.
+
+If the capture reports **0 events**, do not assume it worked — either the room
+was silent or the `join`/`message` contract has changed.
+
+### Open risk: the provider may change under us
+
+Kniteforce appears to be standing up a self-hosted chat at
+`kniteforce-chat.fly.dev`. If the site cuts over, this reader stops receiving —
+loudly, at `open()`, or as a chat nobody is typing in — and a **different**
+reader is needed for whatever protocol that service speaks. Nothing here is
+salvageable except the `ChatSource` seam and `MergeSource`, which is the point
+of both. Re-run the capture against the new provider before writing a mapper.
+
+---
+
 ## TouchDesigner side
 
 Paste into the Textport (Alt+T), in this order:
