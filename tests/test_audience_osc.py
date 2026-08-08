@@ -150,6 +150,9 @@ def make_op(kick=1.0, snare=1.0, energy=1.5, lfo_decay=0.0, noise=1.0,
         "fx_lfo_decay": FakeCHOP({"chan1": lfo_decay}),
         "fx_noise": FakeCHOP({"chan1": noise, "chan2": noise}, [noise, noise]),
         gp.AUDIENCE_CHOP: FakeCHOP(channels),
+        "attr_dj": FakeCHOP({name: 0.0 for name in gp.ae.DJ_CHANNELS}),
+        "fx_palette_engine": FakeCHOP({"primaryR": 0.5, "primaryG": 0.5,
+                                       "primaryB": 0.5}),
     }
     return lambda path: world.get(path)
 
@@ -278,11 +281,33 @@ class TestAudienceFormsAreOptIn:
         assert [tint["colorr"], tint["colorg"], tint["colorb"]] == list(profile.fire_tint)
 
     @pytest.mark.parametrize("profile", ALL_PROFILES, ids=PROFILE_IDS)
-    def test_the_audience_plan_binds_every_audience_channel_somewhere(self, profile):
+    def test_the_audience_plan_binds_every_channel_this_profile_claims(self, profile):
+        """Declared-and-read, per profile.
+
+        AUDIENCE_CHANNELS is the union across the registry -- the Constant CHOP
+        has to carry every channel any look might read. A given look reads a
+        subset: the attractor's `chaos` and `morph_bias` would be dead
+        references inside a silhouette profile's expressions. So the invariant
+        is per-profile, and `test_every_channel_is_read_by_some_profile` below
+        closes the other half: nothing is declared that nobody reads.
+        """
         plan = gp.profile_plan(profile, audience=True)
         blob = repr(plan)
-        for channel in gp.AUDIENCE_CHANNELS:
+        for channel in gp.audience_channels_for(profile):
             assert "'%s'" % channel in blob, "%s is declared but never read" % channel
+        for channel in set(gp.AUDIENCE_CHANNELS) - set(gp.audience_channels_for(profile)):
+            # Match the fx_audience READ, not the bare name: attr_ctl has
+            # channels of its own called `chaos` and `speed`, and those are the
+            # engine's knobs, not the audience's hands on them.
+            assert gp.aud(channel) not in blob, (
+                "%s is not claimed by %s but is bound anyway" % (channel, profile.name))
+
+    def test_every_channel_is_read_by_some_profile(self):
+        """The union half: no channel is declared that no look consumes."""
+        claimed = set()
+        for profile in ALL_PROFILES:
+            claimed |= set(gp.audience_channels_for(profile))
+        assert claimed == set(gp.AUDIENCE_CHANNELS)
 
 
 # ===========================================================================

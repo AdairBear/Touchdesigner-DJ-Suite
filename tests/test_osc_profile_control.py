@@ -229,15 +229,36 @@ class TestEveryControlIsVisible:
             assert x + w <= layout.WIDTH
             assert y + h <= layout.HEIGHT
 
-    def test_buttons_are_full_width_and_stacked_without_overlap(self):
-        """Five fat targets a thumb can hit in a dark booth."""
-        bottom = 0
-        for node in _nodes("BUTTON"):
-            x, y, w, h = _frame(node)
-            assert w == layout.WIDTH - 2 * layout.MARGIN
-            assert h >= 120
-            assert y >= bottom
-            bottom = y + h
+    def test_buttons_are_fat_targets_that_never_overlap(self):
+        """Fat targets a thumb can hit in a dark booth, however many there are.
+
+        The registry outgrew one column when the attractor looks landed, so the
+        assertion is the ergonomic invariant rather than the old single-column
+        geometry: every button clears the thumb minimum, none overlaps another,
+        and none escapes the frame. `_grid` adds a column instead of shrinking
+        a target, and this is what holds it to that.
+        """
+        rects = [_frame(node) for node in _nodes("BUTTON")]
+        assert rects, "no buttons in the layout"
+        for x, y, w, h in rects:
+            assert h >= layout.MIN_BUTTON_H
+            assert w >= layout.MIN_BUTTON_H, "a target this narrow is a miss"
+            assert x >= layout.MARGIN
+            assert x + w <= layout.WIDTH - layout.MARGIN
+            assert y + h <= layout.HEIGHT - layout.MARGIN
+        for i, (ax, ay, aw, ah) in enumerate(rects):
+            for bx, by, bw, bh in rects[i + 1:]:
+                overlaps = (ax < bx + bw and bx < ax + aw
+                            and ay < by + bh and by < ay + ah)
+                assert not overlaps, "buttons overlap: %s vs %s" % (
+                    (ax, ay, aw, ah), (bx, by, bw, bh))
+
+    def test_a_single_column_still_spans_the_full_width(self):
+        """The one-column case is unchanged -- five profiles laid out as before."""
+        cols, btn_w, btn_h = layout._grid(5)
+        assert cols == 1
+        assert btn_w == layout.WIDTH - 2 * layout.MARGIN
+        assert btn_h >= layout.MIN_BUTTON_H
 
 
 class TestButtonsMatchTouchOscSchema:

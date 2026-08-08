@@ -63,6 +63,36 @@ class FakeChan:
     def __rsub__(self, other):
         return other - self._value
 
+    def __truediv__(self, other):
+        return self._value / other
+
+    def __neg__(self):
+        return -self._value
+
+    # The attractor and audience expressions wrap channel reads in min()/max(),
+    # which needs ordering. A real TD channel supports these; the fake has to
+    # as well, or the clamp under test cannot even be evaluated.
+    def __lt__(self, other):
+        return float(self._value) < float(other)
+
+    def __le__(self, other):
+        return float(self._value) <= float(other)
+
+    def __gt__(self, other):
+        return float(self._value) > float(other)
+
+    def __ge__(self, other):
+        return float(self._value) >= float(other)
+
+    def __eq__(self, other):
+        try:
+            return float(self._value) == float(other)
+        except (TypeError, ValueError):
+            return NotImplemented
+
+    def __hash__(self):
+        return hash(self._value)
+
 
 class FakeCHOP:
     """A CHOP whose channels are addressable by name or index."""
@@ -100,6 +130,12 @@ def make_op(kick=1.0, snare=1.0, energy=1.5, lfo_decay=0.0, noise=1.0):
         "fx_master": FakeCHOP({"bass": energy}),
         "fx_lfo_decay": FakeCHOP({"chan1": lfo_decay}),
         "fx_noise": FakeCHOP({"chan1": noise, "chan2": noise}, [noise, noise]),
+        # The attractor profiles' expressions read the DJ offset CHOP and the
+        # live palette engine. Both default to their resting values, so an
+        # attractor plan evaluates to exactly the profile's own numbers here.
+        "attr_dj": FakeCHOP({name: 0.0 for name in gp.ae.DJ_CHANNELS}),
+        "fx_palette_engine": FakeCHOP({"primaryR": 0.5, "primaryG": 0.5,
+                                       "primaryB": 0.5}),
     }
     return lambda path: world.get(path)
 

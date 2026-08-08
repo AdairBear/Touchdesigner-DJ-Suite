@@ -23,7 +23,12 @@
 #   argument is treated as a release and ignored, so a look does not re-apply
 #   when your finger lifts.
 #
-#   Anything on this port that is NOT /dj/profile/* is offered to
+#       /dj/attractor/<knob>      -1..1  -- Thomas's live attractor offsets.
+#   The knob list is closed (attractor_engine.DJ_CHANNELS) and each value is a
+#   bounded OFFSET that the parameter expression scales and clamps. Ungated,
+#   like /dj/profile/*, and it arms the same audience lockout.
+#
+#   Anything on this port that is NOT /dj/profile/* or /dj/attractor/* is offered to
 #   audience_control.py, which owns the /dj/audience/* namespace and /dj/panic.
 #   The split is deliberate and load-bearing: the audience kill switch gates
 #   only the audience namespace, so turning the room off never turns Thomas
@@ -42,7 +47,7 @@
 
 from __future__ import annotations
 
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 
 #: UDP port the OSC In DAT listens on. 7000 is already taken by the tracker's
 #: body-data stream, so this is deliberately distinct.
@@ -50,6 +55,13 @@ OSC_PORT = 7400
 
 #: Address prefix for a per-profile button.
 OSC_PREFIX = "/dj/profile"
+
+#: Address prefix for Thomas's live attractor knobs. A THIRD namespace, not a
+#: widening of either existing one, and the reason is the same reason the
+#: audience got its own: a kill switch that also kills the operator is not a
+#: kill switch. /dj/audience/* is gated by audience_control; this is not gated
+#: at all, and like /dj/profile/* it arms the 60 s audience lockout.
+ATTRACTOR_PREFIX = "/dj/attractor"
 
 PARENT = "/project1"
 DAT_NAME = "osc_profile_in"
@@ -116,6 +128,71 @@ def parse_osc_profile_message(address: str, args: Optional[List[Any]] = None
     return None
 
 
+def _attractor() -> Any:
+    """Import the attractor engine, working both in TD and under pytest.
+
+    Returns:
+        The attractor_engine module.
+    """
+    import attractor_engine as ae
+
+    return ae
+
+
+def parse_osc_attractor_message(address: str, args: Optional[List[Any]] = None
+                                ) -> Optional[Dict[str, Any]]:
+    """Resolve an attractor knob message to a command, or None to ignore it.
+
+    Pure and TD-free, exactly like ``parse_osc_profile_message``: what a fader
+    move does is decided here, not inside a callback that needs a running show
+    to exercise.
+
+    The vocabulary is CLOSED. ``attractor_engine.DJ_CHANNELS`` is the entire
+    list of things this address can touch, and every value is a bounded -1..1
+    OFFSET that the parameter expression then scales and clamps. There is no
+    address here that sets an attractor parameter directly, no address that
+    selects a profile, and no address that raises a cap.
+
+    Args:
+        address: The OSC address, e.g. ``/dj/attractor/chaos``.
+        args: OSC arguments. The first numeric one is the offset.
+
+    Returns:
+        ``{"channel": name, "value": float}``, ``{"reset": True}``, or None.
+    """
+    if not address:
+        return None
+    address = address.rstrip("/")
+    if not address.startswith(ATTRACTOR_PREFIX + "/"):
+        return None
+    rest = address[len(ATTRACTOR_PREFIX) + 1:]
+    if "/" in rest:
+        return None
+
+    if rest == "reset":
+        # A button sends 1 on press and 0 on release; fire once, on press.
+        if args:
+            first = args[0]
+            if isinstance(first, bool) and not first:
+                return None
+            if isinstance(first, (int, float)) and float(first) == 0.0:
+                return None
+        return {"reset": True}
+
+    ae = _attractor()
+    if rest not in ae.DJ_CHANNELS:
+        return None
+    value = 0.0
+    if args:
+        first = args[0]
+        if isinstance(first, bool) or not isinstance(first, (int, float)):
+            return None
+        value = float(first)
+        if value != value or value in (float("inf"), float("-inf")):
+            return None
+    return {"channel": rest, "value": max(-1.0, min(1.0, value))}
+
+
 def osc_addresses() -> List[str]:
     """List the per-profile OSC addresses, for the layout and the docs.
 
@@ -123,6 +200,17 @@ def osc_addresses() -> List[str]:
         One address per registered profile, in registry order.
     """
     return ["%s/%s" % (OSC_PREFIX, name) for name in _profiles().PROFILES]
+
+
+def attractor_addresses() -> List[str]:
+    """List the attractor knob addresses, for the layout and the docs.
+
+    Returns:
+        One address per DJ channel, plus the reset.
+    """
+    ae = _attractor()
+    return (["%s/%s" % (ATTRACTOR_PREFIX, c) for c in ae.DJ_CHANNELS]
+            + ["%s/reset" % ATTRACTOR_PREFIX])
 
 
 # --- Handler installed into TD ----------------------------------------------
@@ -157,6 +245,23 @@ def onTableChange(dat):
             args.append(raw)
     name = ctl.parse_osc_profile_message(address, args)
     if name is None:
+        # Thomas's attractor knobs share his priority, not the audience's:
+        # checked BEFORE the audience fallback, never gated, and they arm the
+        # same lockout so a vote in flight cannot undo a hand on a fader.
+        knob = ctl.parse_osc_attractor_message(address, args)
+        if knob is not None:
+            try:
+                import attractor_pipeline as ap
+                import audience_control as aud
+                import time as _time
+                if knob.get("reset"):
+                    ap.zero_dj()
+                else:
+                    ap.set_dj(knob["channel"], knob["value"])
+                aud.STATE.arm_lockout(_time.monotonic())
+            except Exception as e:
+                print("[osc_profile] attractor knob failed:", e)
+            return
         # Not one of Thomas's buttons. It may be audience traffic, which is a
         # different namespace and a different set of gates -- see
         # audience_control.py. If that module is not installed, nothing here
@@ -232,6 +337,11 @@ def install_osc_profile_control() -> Optional[Any]:
     print("[osc_profile] listening on UDP %d" % OSC_PORT)
     for addr in osc_addresses():
         print("[osc_profile]   %s" % addr)
+    try:
+        for addr in attractor_addresses():
+            print("[osc_profile]   %s  (-1..1 offset)" % addr)
+    except Exception as exc:
+        print("[osc_profile] attractor addresses unavailable: %s" % exc)
     return osc
 
 

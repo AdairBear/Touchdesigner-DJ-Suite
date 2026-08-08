@@ -37,6 +37,27 @@
       "file": "dj_launcher_MONO_PULSE.toe",
       "path": "/Users/thomasadair/projects/touchdesigner-dj-suite/touchdesigner/profiles/dj_launcher_MONO_PULSE.toe",
       "sha256": "8a1ffd5e2e76c8c936985f0704f8e16627312d839fb0bd0a68bd856d6499965a"
+    },
+    {
+      "profile": "ATTRACTOR",
+      "description": "Chaotic-attractor engine. Lorenz->Thomas->Aizawa, morphing with the section.",
+      "file": "dj_launcher_ATTRACTOR.toe",
+      "path": "/Users/thomasadair/projects/touchdesigner-dj-suite/touchdesigner/profiles/dj_launcher_ATTRACTOR.toe",
+      "sha256": "8a1ffd5e2e76c8c936985f0704f8e16627312d839fb0bd0a68bd856d6499965a"
+    },
+    {
+      "profile": "ATTRACTOR_LORENZ",
+      "description": "Locked to Lorenz. The recognisable butterfly, cold palette, long tails.",
+      "file": "dj_launcher_ATTRACTOR_LORENZ.toe",
+      "path": "/Users/thomasadair/projects/touchdesigner-dj-suite/touchdesigner/profiles/dj_launcher_ATTRACTOR_LORENZ.toe",
+      "sha256": "8a1ffd5e2e76c8c936985f0704f8e16627312d839fb0bd0a68bd856d6499965a"
+    },
+    {
+      "profile": "ATTRACTOR_AIZAWA",
+      "description": "Peak time. Aizawa knot, dense and fast, acid/magenta, hard kick response.",
+      "file": "dj_launcher_ATTRACTOR_AIZAWA.toe",
+      "path": "/Users/thomasadair/projects/touchdesigner-dj-suite/touchdesigner/profiles/dj_launcher_ATTRACTOR_AIZAWA.toe",
+      "sha256": "8a1ffd5e2e76c8c936985f0704f8e16627312d839fb0bd0a68bd856d6499965a"
     }
   ]
 }

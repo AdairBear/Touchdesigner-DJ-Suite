@@ -75,8 +75,12 @@ MIN_CONFIDENCE = 0.55
 #: drift from the registry -- see validator.valid_profile_targets().
 VERBS: Tuple[str, ...] = ("PROFILE", "NUDGE", "ONESHOT", "NONE")
 
+#: CHAOS and MORPH only do anything while an ATTRACTOR* profile is live. They
+#: are accepted regardless, and are inert otherwise -- gating them would mean
+#: the bridge tracking the live look, which is one more thing to be wrong in
+#: the dark. See dj_graphics_profiles.audience_channels_for().
 NUDGE_TARGETS: Tuple[str, ...] = (
-    "GLOW", "FLASH", "TRAILS", "SHAKE", "ZOOM", "SPEED",
+    "GLOW", "FLASH", "TRAILS", "SHAKE", "ZOOM", "SPEED", "CHAOS", "MORPH",
 )
 
 ONESHOT_TARGETS: Tuple[str, ...] = (
@@ -99,6 +103,8 @@ NUDGE_CHANNEL: Dict[str, str] = {
     "SHAKE": "shake",
     "ZOOM": "zoom",
     "SPEED": "speed",
+    "CHAOS": "chaos",
+    "MORPH": "morph_bias",
 }
 
 #: Nudge amounts are clamped to this before they leave the bridge, clamped

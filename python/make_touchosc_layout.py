@@ -55,6 +55,15 @@ WIDTH, HEIGHT = 720, 1280
 MARGIN, GAP = 40, 24
 LABEL_H = 90
 
+#: Smallest button a thumb can reliably hit in a dark booth, in points. This is
+#: the constraint the grid is solved for -- it is not negotiable downward, so
+#: when the registry outgrows one column the layout adds a column rather than
+#: shrinking the targets. See `_grid`.
+MIN_BUTTON_H = 120
+#: Two columns fit a 720 pt tablet comfortably. Three would put the targets
+#: back under the thumb minimum horizontally, which defeats the point.
+MAX_COLUMNS = 2
+
 #: zlib level TouchOSC's own exporter uses -- its files begin 78 9c.
 ZLIB_LEVEL = 6
 
@@ -70,6 +79,10 @@ COLOURS: Dict[str, Tuple[float, float, float, float]] = {
     "STROBE_ACID": (0.35, 1.0, 0.06, 1.0),
     "VAPOR_UV": (1.0, 0.06, 0.55, 1.0),
     "MONO_PULSE": (0.0, 1.0, 1.0, 1.0),
+    # The attractor looks, echoing their own palettes the same way.
+    "ATTRACTOR": (0.35, 0.45, 1.0, 1.0),
+    "ATTRACTOR_LORENZ": (0.1, 0.6, 1.0, 1.0),
+    "ATTRACTOR_AIZAWA": (1.0, 0.1, 0.7, 1.0),
 }
 
 _WHITE = (1.0, 1.0, 1.0, 1.0)
@@ -337,6 +350,34 @@ def _caption(name: str, text: str, x: int, y: int, w: int, h: int,
     return _node(_nid("label:" + name), "LABEL", props, values)
 
 
+def _grid(count: int) -> Tuple[int, int, int]:
+    """Solve the button grid for a given number of profiles.
+
+    The thumb minimum is the fixed point. One column is preferred because it
+    reads fastest, but once the registry grows past what a single column can
+    give MIN_BUTTON_H to, the layout takes a second column rather than
+    shrinking the targets -- a pad you cannot hit in the dark is worse than a
+    pad you have to scan.
+
+    Args:
+        count: Number of buttons to place.
+
+    Returns:
+        ``(columns, button_width, button_height)``.
+    """
+    count = max(1, int(count))
+    usable_h = HEIGHT - (2 * MARGIN) - LABEL_H - GAP
+    cols = 1
+    while True:
+        rows = -(-count // cols)                       # ceil division
+        btn_h = (usable_h - GAP * (rows - 1)) // rows
+        if btn_h >= MIN_BUTTON_H or cols >= MAX_COLUMNS:
+            break
+        cols += 1
+    btn_w = (WIDTH - 2 * MARGIN - GAP * (cols - 1)) // cols
+    return cols, btn_w, btn_h
+
+
 def build_xml() -> str:
     """Build the full layout document.
 
@@ -344,23 +385,23 @@ def build_xml() -> str:
         The layout as an XML string.
     """
     names: List[str] = list(gp.PROFILES)
-    usable_h = HEIGHT - (2 * MARGIN) - LABEL_H - GAP
-    btn_h = (usable_h - GAP * (len(names) - 1)) // len(names)
-    btn_w = WIDTH - 2 * MARGIN
+    cols, btn_w, btn_h = _grid(len(names))
 
     children: List[str] = [
-        _caption("title", "DJ PROFILES", MARGIN, MARGIN, btn_w, LABEL_H,
-                 40, _WHITE)
+        _caption("title", "DJ PROFILES", MARGIN, MARGIN,
+                 WIDTH - 2 * MARGIN, LABEL_H, 40, _WHITE)
     ]
-    y = MARGIN + LABEL_H + GAP
-    for name in names:
+    top = MARGIN + LABEL_H + GAP
+    for index, name in enumerate(names):
         fill = COLOURS.get(name, _WHITE)
+        col, row = index % cols, index // cols
+        x = MARGIN + col * (btn_w + GAP)
+        y = top + row * (btn_h + GAP)
         # Button first, caption second: later siblings draw on top.
-        children.append(_button(name, MARGIN, y, btn_w, btn_h))
+        children.append(_button(name, x, y, btn_w, btn_h))
         children.append(_caption("%s_text" % name, name.replace("_", " "),
-                                 MARGIN, y, btn_w, btn_h, 34,
+                                 x, y, btn_w, btn_h, 34,
                                  _readable_text_colour(fill)))
-        y += btn_h + GAP
 
     root_props = "".join((
         _prop("b", "background", "1"),

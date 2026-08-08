@@ -98,6 +98,13 @@ import json
 import os
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
+#: The chaotic-attractor engine. A hard import on purpose: this file and
+#: `attractor_engine.py` ship together, and a silently-absent module would mean
+#: a profile that exists in the registry but does nothing at the rig -- exactly
+#: the "how would I find out?" failure the fail-loud rule exists to prevent.
+#: The dependency runs one way only: attractor_engine imports nothing from here.
+import attractor_engine as ae
+
 # --- Live network contract ---------------------------------------------------
 #: Nodes this file re-binds. Names are fixed by extend_dj_graphics.py and
 #: td_startup_hooks._apply_rave_look(); renaming any of them breaks the show.
@@ -126,8 +133,18 @@ ZOOM_HARD_CAP = 1.6
 #: by apply_profile() -- this file still creates no nodes.
 AUDIENCE_CHOP = "fx_audience"
 #: The nudge channels, all zero-default, all clamped to [-1, 1] on write.
+#:
+#: The attractor engine's two channels are APPENDED rather than interleaved, so
+#: the existing channel indices are unchanged -- `audience_control.set_channel`
+#: addresses a Constant CHOP by declared order, and reordering this tuple would
+#: silently repoint every nudge in a .toe that had not been reinstalled.
+#: Re-run `install_audience_control()` after pulling this change.
+#:
+#: Note that a profile only READS the channels it has a surface for: `chaos`
+#: and `morph_bias` are inert while a non-attractor look is up. Use
+#: `audience_channels_for(profile)` for the per-profile view.
 AUDIENCE_CHANNELS = ("gain_glow", "gain_flash", "trail_bias", "shake",
-                     "zoom", "speed")
+                     "zoom", "speed") + ae.ATTRACTOR_AUDIENCE_CHANNELS
 #: The one-shot channels: a trigger stamp and a duration per effect, plus the
 #: snapped pop colour. A one-shot is a decaying pulse driven entirely by a
 #: parameter expression reading these, so it self-cancels with no per-frame
@@ -205,6 +222,13 @@ class Profile:
         mode: ``"cycle"`` alternates the fire/lightning switch, ``"fire"`` or
             ``"lightning"`` locks it to one.
         mode_dwell_s: Seconds per mode when ``mode == "cycle"``.
+        attractor: An ``attractor_engine.AttractorSpec``, or None for the five
+            original silhouette looks. A profile that carries one renders a
+            strange-attractor point cloud INTO the same fx_ chain, upstream of
+            the trails -- so it inherits this profile's palette, trails, kick
+            flash, snare shake and every audience clamp already listed above,
+            rather than running beside them. That is the whole integration:
+            the attractor is a source, not a second pipeline.
     """
 
     def __init__(
@@ -228,6 +252,7 @@ class Profile:
         trail_energy_gain: float = 0.0,
         mode: str = "cycle",
         mode_dwell_s: float = 30.0,
+        attractor: Optional["ae.AttractorSpec"] = None,
     ) -> None:
         self.name = name
         self.description = description
@@ -248,6 +273,7 @@ class Profile:
         self.trail_energy_gain = float(trail_energy_gain)
         self.mode = str(mode)
         self.mode_dwell_s = float(mode_dwell_s)
+        self.attractor = attractor
 
     def __repr__(self) -> str:  # pragma: no cover - debug convenience
         return "<Profile %s: %s>" % (self.name, self.description)
@@ -361,7 +387,37 @@ def validate_profile(profile: Profile) -> List[str]:
         if getattr(profile, field) < 0.0:
             problems.append("%s must be >= 0" % field)
 
+    if profile.attractor is not None:
+        problems += ["attractor: " + p for p in ae.validate_spec(profile.attractor)]
+
     return problems
+
+
+def audience_channels_for(profile: Profile) -> Tuple[str, ...]:
+    """List the fx_audience channels THIS profile actually consumes.
+
+    AUDIENCE_CHANNELS is the union across the whole registry, because the
+    Constant CHOP has to carry every channel any profile might read. A given
+    look reads a subset of it: the attractor channels are inert while a
+    silhouette profile is up, and would be dead references if they were bound
+    into its expressions.
+
+    Consequence worth knowing at the desk: a CHAOS nudge that arrives while
+    UV_RAVE is live is accepted, written, and does nothing visible -- while
+    still spending the audience's global 10 s NUDGE cooldown. That is a
+    deliberate trade. Gating it TD-side would mean the airlock consulting the
+    live look, which is one more thing to be wrong in the dark.
+
+    Args:
+        profile: The profile.
+
+    Returns:
+        The channels this profile's expressions reference, in registry order.
+    """
+    if profile.attractor is not None:
+        return tuple(AUDIENCE_CHANNELS)
+    return tuple(c for c in AUDIENCE_CHANNELS
+                 if c not in ae.ATTRACTOR_AUDIENCE_CHANNELS)
 
 
 # -----------------------------------------------------------------------------
@@ -665,6 +721,46 @@ def fire_tint_expr(profile: Profile, index: int) -> str:
     )
 
 
+#: fx_palette_engine channels the attractor's material tracks, in RGB order.
+_PALETTE_PRIMARY = ("primaryR", "primaryG", "primaryB")
+
+
+def attractor_color_expr(profile: Profile, index: int,
+                         audience: bool = False) -> str:
+    """Build one component of the attractor material's colour.
+
+    The attractor tracks the LIVE palette sweep rather than a fixed tint, so a
+    kick that advances the palette advances the particles with it and the two
+    layers never disagree about what colour the show is.
+
+    PALETTE GUARD: the COLOR_POP one-shot reaches this expression exactly the
+    way it reaches ``fire_tint_expr`` -- by SNAPPING, through a 0/1 gate, to a
+    named neon anchor. It never crossfades, so it cannot pass through the
+    15-50 degree band that ``is_brown()`` exists to ban. This is also the
+    answer to "give the audience a colour_pop for the attractor": they already
+    have one, it is the one-shot the rig already ships, and it now moves the
+    particles too. No new channel, no new cap, no second code path.
+
+    Args:
+        profile: The profile (unused today beyond documenting intent -- the
+            base colour comes from the live palette engine, which the profile
+            already parameterises).
+        index: 0, 1 or 2 for r, g, b.
+        audience: True to include the COLOR_POP snap. False emits the plain
+            palette reference, byte-identical to the no-bridge rig.
+
+    Returns:
+        A TD parameter expression string, bounded to [0, 1].
+    """
+    base = "op('fx_palette_engine')['%s']" % _PALETTE_PRIMARY[index]
+    if not audience:
+        return "max(0, min(1, %s))" % base
+    gate = pulse_gate_expr("pop_t0", "pop_dur")
+    return "max(0, min(1, %s + (%s - %s) * (%s)))" % (
+        base, aud(_POP_CHANNELS[index]), base, gate,
+    )
+
+
 def mode_index_expr(profile: Profile) -> str:
     """Build the visual_switch index expression for this profile's mode schedule.
 
@@ -942,6 +1038,140 @@ register(Profile(
     mode_dwell_s=45.0,
 ))
 
+# -----------------------------------------------------------------------------
+# THE ATTRACTOR LOOKS -- same registry, same OSC addresses, same clamps.
+#
+# These three are ordinary profiles that additionally carry an AttractorSpec.
+# Everything the five above do, these do: palette sweep, trails, kick flash,
+# snare shake, glow, and every audience nudge. The spec adds a point cloud
+# upstream of the trails; it does not add a pipeline.
+#
+# They need `attractor_pipeline.install_attractor()` to have built the nodes.
+# Without it, applying one is not an error -- it reports the missing nodes and
+# renders as its silhouette look, the same way a profile behaves when
+# extend_dj_graphics.py has not been run.
+# -----------------------------------------------------------------------------
+
+register(Profile(
+    name="ATTRACTOR",
+    description="Chaotic-attractor engine. Lorenz->Thomas->Aizawa, morphing with the section.",
+    palette=[CYAN, VIOLET, MAGENTA, BLUE],
+    fire_tint=(0.3, 0.6, 1.0),
+    palette_period_s=26.0,
+    kick_advances_palette=True,
+    snare_pop=2.0,
+    mono_saturation=0.10,
+    outline_base_bright=1.8,
+    outline_kick_gain=4.0,
+    glow_kick_gain=30.0,
+    glow_snare_gain=10.0,
+    zoom_kick_gain=0.14,
+    kick_flash_gain=5.0,
+    shake_snare_px=4.0,
+    # The point cloud already carries its own tail, so the feedback trail is
+    # pulled back from UV_RAVE's 0.89. Stacking two trail systems at full depth
+    # is how a legible attractor turns into a smear.
+    trail_persistence=0.86,
+    trail_energy_gain=0.03,
+    mode="lightning",
+    attractor=ae.AttractorSpec(
+        system="MORPH",
+        seeds=24,
+        trail=256,
+        chaos_base=0.22,
+        chaos_energy_gain=0.35,
+        chaos_kick_gain=0.15,
+        morph_cycle_s=0.0,          # the section drives the morph, not a clock
+        morph_energy_gain=0.70,
+        speed_base=1.0,
+        speed_kick_gain=0.40,
+        trail_base=0.60,
+        trail_snare_gain=0.25,
+        spread=0.85,
+        size=0.012,
+        spin=6.0,
+    ),
+))
+
+register(Profile(
+    name="ATTRACTOR_LORENZ",
+    description="Locked to Lorenz. The recognisable butterfly, cold palette, long tails.",
+    palette=[CYAN, BLUE, VIOLET],
+    fire_tint=(0.2, 0.5, 1.0),
+    palette_period_s=40.0,
+    kick_advances_palette=False,
+    snare_pop=1.2,
+    mono_saturation=0.08,
+    outline_base_bright=1.6,
+    outline_kick_gain=3.0,
+    glow_kick_gain=24.0,
+    glow_snare_gain=8.0,
+    zoom_kick_gain=0.10,
+    kick_flash_gain=3.5,
+    shake_snare_px=3.0,
+    trail_persistence=0.90,
+    trail_energy_gain=0.02,
+    mode="lightning",
+    attractor=ae.AttractorSpec(
+        system="LORENZ",
+        seeds=16,
+        trail=384,
+        chaos_base=0.10,
+        chaos_energy_gain=0.25,
+        chaos_kick_gain=0.10,
+        morph_cycle_s=0.0,
+        # Near zero: this look is a promise that it stays Lorenz. The tiny
+        # residual keeps the form breathing without leaving the wings.
+        morph_energy_gain=0.08,
+        speed_base=0.9,
+        speed_kick_gain=0.30,
+        trail_base=0.80,
+        trail_snare_gain=0.15,
+        spread=0.90,
+        size=0.010,
+        spin=4.0,
+    ),
+))
+
+register(Profile(
+    name="ATTRACTOR_AIZAWA",
+    description="Peak time. Aizawa knot, dense and fast, acid/magenta, hard kick response.",
+    palette=[MAGENTA, ACID, VIOLET, WHITE_HOT],
+    fire_tint=(1.0, 0.15, 0.85),
+    palette_period_s=12.0,
+    kick_advances_palette=True,
+    snare_pop=3.2,
+    mono_saturation=0.05,
+    outline_base_bright=2.2,
+    outline_kick_gain=7.0,
+    glow_kick_gain=36.0,
+    glow_snare_gain=12.0,
+    zoom_kick_gain=0.28,
+    kick_flash_gain=9.0,
+    shake_snare_px=9.0,
+    trail_persistence=0.78,
+    trail_energy_gain=0.0,
+    mode="cycle",
+    mode_dwell_s=12.0,
+    attractor=ae.AttractorSpec(
+        system="AIZAWA",
+        seeds=48,
+        trail=192,
+        chaos_base=0.45,
+        chaos_energy_gain=0.40,
+        chaos_kick_gain=0.25,
+        morph_cycle_s=0.0,
+        morph_energy_gain=0.25,
+        speed_base=1.4,
+        speed_kick_gain=0.60,
+        trail_base=0.40,
+        trail_snare_gain=0.30,
+        spread=0.75,
+        size=0.009,
+        spin=14.0,
+    ),
+))
+
 #: Falling back here is always safe: it is the look currently shipped by
 #: td_startup_hooks._apply_rave_look().
 DEFAULT_PROFILE = "UV_RAVE"
@@ -1028,7 +1258,20 @@ def profile_plan(profile: Profile, with_energy: bool = True,
                 for i, par in enumerate(_TINT_PARS)}
     else:
         tint = {par: profile.fire_tint[i] for i, par in enumerate(_TINT_PARS)}
-    return {
+    attractor: Dict[str, Any] = {}
+    if profile.attractor is not None:
+        attractor = {
+            ae.CTL_CHOP: ae.attr_ctl_plan(profile.attractor, audience),
+            "attr_mat": {par: attractor_color_expr(profile, i, audience)
+                         for i, par in enumerate(_TINT_PARS)},
+        }
+    else:
+        # Every profile writes attr_ctl, including the ones with no attractor.
+        # That is what makes switching AWAY from an attractor turn it off
+        # instead of leaving a point cloud running behind the silhouette --
+        # and `cook()` short-circuits on enable == 0 before it integrates.
+        attractor = {ae.CTL_CHOP: ae.dark_ctl_plan()}
+    plan: Dict[str, Any] = {
         "fx_palette_table": {"rows": palette_rows(profile)},
         "fx_palette_engine_cb": {"text": palette_engine_code(profile, audience)},
         "fx_palette_mono": {"saturationmult": profile.mono_saturation},
@@ -1046,6 +1289,8 @@ def profile_plan(profile: Profile, with_energy: bool = True,
         "fire_tint": tint,
         "visual_switch": {"index": mode_index_expr(profile)},
     }
+    plan.update(attractor)
+    return plan
 
 
 # =============================================================================
@@ -1385,6 +1630,48 @@ def apply_profile(name: str = DEFAULT_PROFILE) -> Dict[str, Any]:
         if node is not None:
             _set_expr(node, ["index"], mode_index_expr(prof), report)
     _step("mode", _mode, report)
+
+    # --- attractor engine ----------------------------------------------------
+    # Deliberately NOT in _need(): the attractor nodes are optional. A rig that
+    # has never run attractor_pipeline.install_attractor() applies every look
+    # exactly as it does today, and an attractor profile falls back to its
+    # silhouette half rather than failing. Absence is a valid state, not a bug.
+    def _attractor() -> None:
+        ctl = _resolve(ae.CTL_CHOP)
+        if ctl is None:
+            if prof.attractor is not None:
+                report.append(
+                    "WARN %s absent -- run attractor_pipeline.install_attractor() "
+                    "to build the engine; %s renders as its silhouette look until "
+                    "then" % (ae.CTL_CHOP, prof.name))
+            return
+        plan = (ae.attr_ctl_plan(prof.attractor, has_audience)
+                if prof.attractor is not None else ae.dark_ctl_plan())
+        for channel, value in plan.items():
+            index = ae.CTL_CHANNELS.index(channel)
+            par = "value%d" % index
+            if isinstance(value, str):
+                _set_expr(ctl, [par], value, report)
+            else:
+                # Clear any expression a previous profile bound here before
+                # writing a plain value, or TD keeps evaluating the old string.
+                try:
+                    getattr(ctl.par, par).expr = ""
+                    getattr(ctl.par, par).mode = ParMode.CONSTANT  # noqa: F821
+                except Exception:
+                    pass
+                _set_val(ctl, [par], float(value), report)
+        mat = _resolve("attr_mat")
+        if mat is not None and prof.attractor is not None:
+            for i, par in enumerate(_TINT_PARS):
+                _set_expr(mat, [par],
+                          attractor_color_expr(prof, i, has_audience), report)
+        report.append("OK   %s = %s" % (
+            ae.CTL_CHOP,
+            "dark" if prof.attractor is None else "%s seeds=%d trail=%d"
+            % ((prof.attractor.system,) + ae.resolve_counts(
+                prof.attractor.seeds, prof.attractor.trail))))
+    _step("attractor", _attractor, report)
 
     if missing:
         report.append("WARN missing nodes: %s (run extend_dj_graphics.py first)"

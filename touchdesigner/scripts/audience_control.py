@@ -68,6 +68,15 @@ NUDGE_CHANNEL: Dict[str, str] = {
     "SHAKE": "shake",
     "ZOOM": "zoom",
     "SPEED": "speed",
+    # The attractor engine's whitelist, and this is the whole of it. CHAOS
+    # opens a knob whose entire 0..1 range is already the safe parameter window
+    # (attractor_math maps it), and MORPH slides the blend by at most 0.35 of
+    # one form -- so neither can reach an unsafe value and neither can select
+    # an attractor. Everything else the attractor does, the audience already
+    # reaches through GLOW/FLASH/TRAILS/SHAKE/ZOOM/SPEED and the COLOR_POP
+    # one-shot, because the attractor renders THROUGH the existing fx_ chain.
+    "CHAOS": "chaos",
+    "MORPH": "morph_bias",
 }
 
 ONESHOT_TARGETS = ("STROBE_BURST", "COLOR_POP", "WHITEOUT")
