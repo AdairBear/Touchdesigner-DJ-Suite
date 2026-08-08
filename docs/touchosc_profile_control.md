@@ -37,16 +37,41 @@ to re-enter it** — worth setting a DHCP reservation before a real gig.
 ### 3. Get the layout onto the devices
 
 Regenerate with `./venv/bin/python python/make_touchosc_layout.py`. It writes
-three files to `~/Desktop`:
+four files to `~/Desktop`:
 
 | File | What it is |
 |---|---|
 | `DJ_Profiles.tosc` | **Try this one.** zlib-compressed, the real format. |
 | `DJ_Profiles_uncompressed.tosc` | Same document, no zlib wrapper. Try only if the first is rejected. |
 | `DJ_Profiles.xml` | Byte-identical to the uncompressed one, for reading. |
+| `DJ_Profiles_profiles_only.tosc` | **Fallback.** Profile buttons only, no fader in it. See *If the faders don't render* below. |
 
 AirDrop `DJ_Profiles.tosc` to the iPad and iPhone. Accept, and choose
 **Open with TouchOSC**. It appears in TouchOSC's layout list.
+
+Take the fallback across too. It costs 2 KB and it is the difference between a
+degraded pad and no pad.
+
+### What's on the page
+
+The generator reads every control channel **live**, from the module that owns
+it, so regenerating always produces a complete surface:
+
+| Section | Read from | Controls |
+|---|---|---|
+| Profile grid | `dj_graphics_profiles.PROFILES` | one button per look, auto-growing to a second column |
+| Knob faders | `attractor_engine.DJ_CHANNELS` | CHAOS / MORPH / SPEED / TRAIL / SPREAD, each a **-1..1 offset** resting dead centre |
+| Crowd gain | `audience_control.audience_addresses()` | `/dj/audience/gain`, resting at 1.0 |
+| `KNOBS 0` | `osc_profile_control.ATTRACTOR_PREFIX` | zeroes every knob offset |
+| `CROWD ON` | `audience_control.audience_addresses()` | toggles the audience on/off |
+| `PANIC` | `audience_control.PANIC_ADDRESS` | the kill switch — momentary, red, bottom right |
+
+**Add a knob to `DJ_CHANNELS`, regenerate, and it is on the pad.** That lockstep
+is the point of the file: before it, the knobs and PANIC were hand-added in the
+TouchOSC editor and destroyed by the next regeneration, which meant the newest
+and least-rehearsed capability was the one with no button on it.
+
+Nothing on the page receives. It is send-only in every control.
 
 ### 4. Point TouchOSC at the Mac
 
@@ -101,6 +126,56 @@ Look changes → the OSC path works and the problem is the iPad's wifi/host/port
 2 worked and this doesn't, it is the network or the Host field — recheck the IP,
 confirm both are on the same non-guest wifi, and check the Mac firewall
 (System Settings → Network → Firewall) isn't blocking incoming UDP for TD.
+
+---
+
+## VERIFY BEFORE A SET — the faders are not confirmed
+
+Read this once. It is short and it is the honest part.
+
+`GROUP`, `BUTTON` and `LABEL` were checked against an authentic
+editor-produced layout. **`FADER` was not** — there is no reference file on
+this machine that contains one, so the node type name and its type-specific
+properties (`response`, `bar`, `centered`, `cursor`, `orientation`) are
+reasoned from the schema the buttons prove, not verified against the app. The
+same applies to the toggle `buttonType` value used by `CROWD ON`.
+
+The parts that decide whether a control appears at all — the `frame` rect, the
+`visible` flag, the `<osc>` block, the `touch`/`x` values — are the same
+elements every shipping button already uses. So the likely failure is cosmetic.
+But "likely" is not "checked", and the last time this file's schema was
+reasoned rather than verified, the layout **opened empty on the iPad**
+(commit `74d38bc`).
+
+**Open `DJ_Profiles.tosc` in the TouchOSC editor on the Mac and confirm, in
+this order:**
+
+1. **The profile buttons are still there and still tappable.** If the whole
+   document is empty, stop — use `DJ_Profiles_profiles_only.tosc` and report it.
+2. **Six faders are drawn** in the strip, below the grid, above the buttons.
+3. **They run vertically**, not horizontally. If they are sideways, the
+   `orientation` property is wrong — cosmetic, and the control still works.
+4. **The five knob faders sit at their centre**, not at the bottom. A knob
+   resting at an end stop means the show comes up already pushed to a full
+   offset.
+5. **`CROWD ON` latches.** Tap it: it should stay on until tapped again. If it
+   springs back, `BUTTON_TOGGLE` is the wrong value and the audience is being
+   enabled and immediately disabled — swap it for `2` in
+   `make_touchosc_layout.py` and regenerate.
+6. **`PANIC` does not latch.** It must be momentary.
+
+**Then on the iPad, with TD running and the Textport open:**
+
+7. Ride **CHAOS** from bottom to top. The Textport should show the offset
+   crossing zero at centre and reaching ±1 at the stops. If it only ever goes
+   0 → 1, the `scaleMin`/`scaleMax` partials are not being honoured and the
+   knobs have lost half their range.
+8. Tap **KNOBS 0** — every offset returns to zero.
+9. Tap **PANIC** and confirm the audience lockout arms.
+
+`DJ_Profiles_profiles_only.tosc` is **byte-for-byte identical** to the layout
+that is already working on the iPad today. If anything above fails mid-set,
+that file is a known-good pad, not a hopeful one.
 
 ---
 

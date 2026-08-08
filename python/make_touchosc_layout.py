@@ -27,6 +27,39 @@ FORMAT NOTE -- READ THIS
     each device (Connections -> OSC -> Connection 1). See
     docs/touchosc_profile_control.md.
 
+EVERY CONTROL CHANNEL IS READ LIVE -- THIS IS THE POINT OF THE FILE
+    Nothing here keeps its own list of what the show can do. The document is
+    assembled from the modules that OWN each namespace:
+
+        profiles   dj_graphics_profiles.PROFILES
+        knobs      attractor_engine.DJ_CHANNELS  (via osc_profile_control)
+        reset      osc_profile_control.ATTRACTOR_PREFIX
+        panic      audience_control.PANIC_ADDRESS
+        audience   audience_control.audience_addresses()  -- enable / gain
+
+    The reason is a failure mode, not tidiness. Before this, the generator knew
+    only about profiles, so the attractor knobs and PANIC were hand-added in
+    the TouchOSC editor -- and every regeneration silently destroyed them. A
+    capability that exists in TouchDesigner but has no button is not reachable
+    mid-set, and the newest capability is the one most likely to need a hand on
+    it. Adding a knob to DJ_CHANNELS must put a fader on the iPad, or the
+    control surface falls behind the palette again.
+
+    The imports below are deliberately unguarded. A missing module is a loud
+    ImportError, not a layout that quietly comes out one section short.
+
+NODE TYPES -- WHAT IS VERIFIED AND WHAT IS NOT
+    GROUP / BUTTON / LABEL are checked against an authentic editor-produced
+    layout. FADER is NOT -- no reference file on this machine contains one, so
+    its type-specific properties (``response``, ``bar``, ``centered``, ...) and
+    the toggle ``buttonType`` value are reasoned, not verified.
+
+    That is why ``main`` also writes DJ_Profiles_profiles_only.tosc: the exact
+    document that shipped before, with no fader in it. If the full layout mis-
+    renders in the editor or on the iPad, that file is the known-good fallback
+    and the set still has its profile buttons. See the verification note in
+    docs/touchosc_profile_control.md.
+
 USAGE
     ./venv/bin/python python/make_touchosc_layout.py
 """
@@ -37,18 +70,22 @@ import os
 import sys
 import uuid
 import zlib
-from typing import Dict, List, Sequence, Tuple
+from typing import Dict, List, NamedTuple, Optional, Sequence, Tuple
 from xml.sax.saxutils import escape
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(REPO_ROOT, "touchdesigner", "scripts"))
 
+import attractor_engine as ae  # noqa: E402
+import audience_control as aud  # noqa: E402
 import dj_graphics_profiles as gp  # noqa: E402
 import osc_profile_control as ctl  # noqa: E402
 
 #: AirDrop target. ~/Desktop so it is trivial to find and send to both devices.
 OUT_DIR = os.path.expanduser("~/Desktop")
 BASENAME = "DJ_Profiles"
+#: Fallback document: profile buttons only, no unverified node type in it.
+FALLBACK_SUFFIX = "_profiles_only"
 
 #: Layout geometry, sized for an iPhone screen so it also works on an iPad.
 WIDTH, HEIGHT = 720, 1280
@@ -63,6 +100,32 @@ MIN_BUTTON_H = 120
 #: Two columns fit a 720 pt tablet comfortably. Three would put the targets
 #: back under the thumb minimum horizontally, which defeats the point.
 MAX_COLUMNS = 2
+
+# --- The live-control strip -------------------------------------------------
+# A fixed band along the bottom of the same 720x1280 page. It is a band and not
+# a second page because a knob you have to navigate to is a knob you will not
+# reach at 02:00 -- and because a PAGER is a structure no reference file here
+# can confirm, which is how the empty-layout defect happened the first time.
+#
+# The strip takes its height off the top of the profile grid's budget. That is
+# the whole trade: five profiles in one column now get 124 pt buttons instead
+# of 217 pt ones. Both clear MIN_BUTTON_H, and `_grid` still adds a column
+# rather than going under it.
+
+#: Inner gap inside the strip. Tighter than GAP: these rows are one instrument.
+STRIP_GAP = 12
+#: Section caption height ("LIVE CONTROL").
+STRIP_LABEL_H = 30
+#: Fader body height. A 170 pt throw is enough travel to ride a knob.
+STRIP_FADER_H = 170
+#: Action buttons (RESET / AUDIENCE / PANIC) get the full thumb minimum. PANIC
+#: especially: it is pressed in a hurry, in the dark, by someone not looking.
+STRIP_ACTION_H = MIN_BUTTON_H
+#: Narrowest fader worth dragging. Faders wrap to a second row below this, the
+#: same way the profile grid takes a column rather than shrinking a target.
+MIN_FADER_W = 72
+#: Narrowest action button. Below this they wrap too.
+MIN_ACTION_W = 150
 
 #: zlib level TouchOSC's own exporter uses -- its files begin 78 9c.
 ZLIB_LEVEL = 6
@@ -87,6 +150,21 @@ COLOURS: Dict[str, Tuple[float, float, float, float]] = {
 
 _WHITE = (1.0, 1.0, 1.0, 1.0)
 _BLACK = (0.0, 0.0, 0.0, 1.0)
+
+#: Strip colours. Deliberately NOT profile colours -- a control that changes a
+#: look must not read as a look, or a panicking hand grabs the wrong thing.
+KNOB_COLOUR = (0.35, 0.45, 1.0, 1.0)        # the attractor's own blue
+AUDIENCE_COLOUR = (1.0, 0.65, 0.0, 1.0)     # amber: the room, not Thomas
+RESET_COLOUR = (0.35, 0.35, 0.40, 1.0)      # inert grey
+PANIC_COLOUR = (1.0, 0.10, 0.10, 1.0)       # the only red on the page
+
+#: buttonType values. 0 (Momentary) is confirmed against an authentic layout;
+#: every profile button has shipped with it. 1 (Toggle) is NOT confirmed -- it
+#: is used only by the audience enable switch, and it is the first thing to
+#: check in the editor. A momentary switch there would send 1 then immediately
+#: 0, i.e. turn the audience on and straight back off.
+BUTTON_MOMENTARY = 0
+BUTTON_TOGGLE = 1
 
 
 # --- XML primitives ---------------------------------------------------------
@@ -172,20 +250,29 @@ def _value(key: str, default: str, locked_default_current: str = "0") -> str:
             % (key, locked_default_current, escape(default)))
 
 
-def _partial(ptype: str, conversion: str, value: str) -> str:
+def _partial(ptype: str, conversion: str, value: str,
+             scale_min: float = 0.0, scale_max: float = 1.0) -> str:
     """Build one <partial>, the building block of a path or an argument.
+
+    ``scaleMin``/``scaleMax`` are what turn a control's native 0..1 travel into
+    the number the receiver actually wants. An attractor knob is a -1..1
+    OFFSET (``osc_profile_control.parse_osc_attractor_message``), so its fader
+    sends -1..1 from the same 0..1 handle position, centre at rest.
 
     Args:
         ptype: CONSTANT, INDEX, VALUE or PROPERTY.
         conversion: BOOLEAN, INTEGER, FLOAT or STRING.
         value: Literal text for CONSTANT, else the value/property name.
+        scale_min: Value sent at the low end of travel.
+        scale_max: Value sent at the high end of travel.
 
     Returns:
         One <partial> element.
     """
     return ("<partial><type>%s</type><conversion>%s</conversion>"
-            "<value>%s</value><scaleMin>0</scaleMin><scaleMax>1</scaleMax>"
-            "</partial>" % (ptype, conversion, escape(value)))
+            "<value>%s</value><scaleMin>%g</scaleMin><scaleMax>%g</scaleMax>"
+            "</partial>" % (ptype, conversion, escape(value),
+                            scale_min, scale_max))
 
 
 def _address_partials(address: str) -> str:
@@ -249,27 +336,73 @@ def _readable_text_colour(rgba: Sequence[float]) -> Tuple[float, float, float, f
     return _BLACK if luma > 0.55 else _WHITE
 
 
-def _button(name: str, x: int, y: int, w: int, h: int) -> str:
-    """Build one profile button that sends its own OSC address.
+def _osc_message(address: str, scale_min: float = 0.0,
+                 scale_max: float = 1.0) -> str:
+    """Build the <osc> block that makes a control send something.
+
+    Send-only in every case. Nothing on this page listens: TouchOSC receiving
+    state would need the show to talk back, and a control surface that can be
+    repositioned by the machine it is driving is a control surface Thomas
+    cannot trust in the dark.
+
+    Args:
+        address: The full OSC address.
+        scale_min: Value sent at the low end of the control's travel.
+        scale_max: Value sent at the high end.
+
+    Returns:
+        One <osc> element.
+    """
+    return (
+        "<osc><enabled>1</enabled><send>1</send><receive>0</receive>"
+        "<feedback>0</feedback><connections>00001</connections>"
+        "<triggers><trigger><var>x</var><condition>ANY</condition></trigger>"
+        "</triggers>"
+        "<path>%s</path>"
+        "<arguments>%s</arguments></osc>"
+        % (_address_partials(address),
+           _partial("VALUE", "FLOAT", "x", scale_min, scale_max))
+    )
+
+
+def _button(name: str, x: int, y: int, w: int, h: int,
+            address: Optional[str] = None,
+            fill: Optional[Sequence[float]] = None,
+            button_type: int = BUTTON_MOMENTARY,
+            default: str = "0") -> str:
+    """Build one button that sends its own OSC address.
 
     Momentary (``buttonType`` 0) with both press and release enabled: the tap
     sends 1, the lift sends 0, and the TD handler ignores the 0. See
-    ``osc_profile_control.parse_osc_profile_message``.
+    ``osc_profile_control.parse_osc_profile_message``. PANIC and the attractor
+    reset want exactly that shape too -- one press, one packet.
+
+    The audience enable switch is the exception and takes ``BUTTON_TOGGLE``,
+    because ``audience_control.route`` reads its value rather than treating it
+    as a press, so a momentary switch would turn the room on and immediately
+    off again.
 
     Args:
-        name: Profile name, e.g. ``UV_RAVE``.
+        name: Node name. Defaults the address to this profile's address.
         x: Left edge within the root group.
         y: Top edge within the root group.
         w: Width in points.
         h: Height in points.
+        address: Full OSC address. Defaults to ``<OSC_PREFIX>/<name>``.
+        fill: RGBA fill. Defaults to the profile colour for ``name``.
+        button_type: BUTTON_MOMENTARY or BUTTON_TOGGLE.
+        default: Serialised default for the ``x`` value.
 
     Returns:
         One BUTTON <node>.
     """
-    fill = COLOURS.get(name, _WHITE)
+    if address is None:
+        address = "%s/%s" % (ctl.OSC_PREFIX, name)
+    if fill is None:
+        fill = COLOURS.get(name, _WHITE)
     props = "".join((
         _prop("b", "background", "1"),
-        _prop("i", "buttonType", "0"),
+        _prop("i", "buttonType", str(button_type)),
         _prop_colour("color", fill),
         _prop("f", "cornerRadius", "8"),
         _prop_frame(x, y, w, h),
@@ -287,18 +420,72 @@ def _button(name: str, x: int, y: int, w: int, h: int) -> str:
         _prop("b", "valuePosition", "0"),
         _prop("b", "visible", "1"),
     ))
-    values = _value("touch", "false") + _value("x", "0")
-    message = (
-        "<osc><enabled>1</enabled><send>1</send><receive>0</receive>"
-        "<feedback>0</feedback><connections>00001</connections>"
-        "<triggers><trigger><var>x</var><condition>ANY</condition></trigger>"
-        "</triggers>"
-        "<path>%s</path>"
-        "<arguments>%s</arguments></osc>"
-        % (_address_partials("%s/%s" % (ctl.OSC_PREFIX, name)),
-           _partial("VALUE", "FLOAT", "x"))
-    )
-    return _node(_nid("button:" + name), "BUTTON", props, values, message)
+    values = _value("touch", "false") + _value("x", default)
+    return _node(_nid("button:" + name), "BUTTON", props, values,
+                 _osc_message(address))
+
+
+def _fader(name: str, address: str, x: int, y: int, w: int, h: int,
+           fill: Sequence[float], default: str,
+           scale_min: float, scale_max: float) -> str:
+    """Build one fader that sends a scaled continuous value.
+
+    UNVERIFIED NODE TYPE. GROUP/BUTTON/LABEL were checked against an authentic
+    editor-produced layout; no reference file available here contains a FADER,
+    so the type name and the fader-specific properties below are reasoned from
+    the shared schema rather than confirmed. The shared parts -- ``frame``,
+    ``visible``, the <osc> block, the ``touch``/``x`` values -- are the same
+    elements the buttons already prove, so the likely failure is cosmetic
+    (wrong orientation, missing centre line) rather than an invisible control.
+    ``main`` writes a fader-free fallback document for the case where it is not.
+
+    Args:
+        name: Node name.
+        address: Full OSC address.
+        x: Left edge within the root group.
+        y: Top edge within the root group.
+        w: Width in points.
+        h: Height in points.
+        fill: RGBA fill.
+        default: Serialised resting handle position, 0..1.
+        scale_min: Value sent at the bottom of travel.
+        scale_max: Value sent at the top.
+
+    Returns:
+        One FADER <node>.
+    """
+    centred = "1" if scale_min < 0.0 else "0"
+    props = "".join((
+        _prop("b", "background", "1"),
+        _prop("b", "bar", "1"),
+        _prop("i", "barDisplay", "0"),
+        _prop("b", "centered", centred),
+        _prop_colour("color", fill),
+        _prop("f", "cornerRadius", "8"),
+        _prop("b", "cursor", "1"),
+        _prop("i", "cursorDisplay", "0"),
+        _prop_frame(x, y, w, h),
+        _prop("b", "grabFocus", "1"),
+        _prop("b", "grid", "0"),
+        _prop("i", "gridSteps", "10"),
+        _prop("b", "interactive", "1"),
+        _prop("b", "locked", "0"),
+        _prop("s", "name", name),
+        # 0 is vertical: the frames below are tall, and a knob you ride with a
+        # thumb wants the travel along the long axis.
+        _prop("i", "orientation", "0"),
+        _prop("b", "outline", "1"),
+        _prop("i", "outlineStyle", "0"),
+        _prop("i", "pointerPriority", "0"),
+        # 0 is absolute: the handle goes where the thumb lands. Relative would
+        # mean a knob that never resyncs after the show restarts.
+        _prop("i", "response", "0"),
+        _prop("i", "shape", "1"),
+        _prop("b", "visible", "1"),
+    ))
+    values = _value("touch", "false") + _value("x", default)
+    return _node(_nid("fader:" + name), "FADER", props, values,
+                 _osc_message(address, scale_min, scale_max))
 
 
 def _caption(name: str, text: str, x: int, y: int, w: int, h: int,
@@ -350,7 +537,207 @@ def _caption(name: str, text: str, x: int, y: int, w: int, h: int,
     return _node(_nid("label:" + name), "LABEL", props, values)
 
 
-def _grid(count: int) -> Tuple[int, int, int]:
+# --- Live channel discovery -------------------------------------------------
+# Everything below asks the owning module what exists. No list is kept here.
+
+class Fader(NamedTuple):
+    """One continuous control the strip must offer.
+
+    Attributes:
+        name: Node name.
+        caption: What it reads on the pad.
+        address: Full OSC address.
+        fill: RGBA fill.
+        default: Resting handle position, 0..1.
+        scale_min: Value sent at the bottom of travel.
+        scale_max: Value sent at the top.
+    """
+
+    name: str
+    caption: str
+    address: str
+    fill: Tuple[float, float, float, float]
+    default: str
+    scale_min: float
+    scale_max: float
+
+
+class Action(NamedTuple):
+    """One button the strip must offer, outside the profile grid.
+
+    Attributes:
+        name: Node name.
+        caption: What it reads on the pad.
+        address: Full OSC address.
+        fill: RGBA fill.
+        button_type: BUTTON_MOMENTARY or BUTTON_TOGGLE.
+        default: Serialised default for the ``x`` value.
+    """
+
+    name: str
+    caption: str
+    address: str
+    fill: Tuple[float, float, float, float]
+    button_type: int
+    default: str
+
+
+def attractor_faders() -> List[Fader]:
+    """Build one fader per live attractor knob.
+
+    Read from ``osc_profile_control.attractor_addresses()``, which reads
+    ``attractor_engine.DJ_CHANNELS``. Adding a knob there puts a fader here
+    with no edit to this file -- that lockstep is the whole point.
+
+    The reset address that function also returns is not a knob and becomes an
+    action button instead, so it is filtered out by address rather than by
+    re-deriving the channel list from a second source.
+
+    Returns:
+        One Fader per DJ channel, in engine order.
+    """
+    reset = "%s/reset" % ctl.ATTRACTOR_PREFIX
+    out: List[Fader] = []
+    for address in ctl.attractor_addresses():
+        if address == reset:
+            continue
+        channel = address.rsplit("/", 1)[-1]
+        # The value is a bounded -1..1 OFFSET, so the fader rests dead centre
+        # and its zero point is a real position a thumb can find, not an end
+        # stop. attractor_engine.DJ_SPAN decides what one unit is worth; this
+        # side deliberately does not know or care.
+        out.append(Fader(name="knob_%s" % channel, caption=channel.upper(),
+                         address=address, fill=KNOB_COLOUR, default="0.5",
+                         scale_min=-1.0, scale_max=1.0))
+    return out
+
+
+def audience_faders() -> List[Fader]:
+    """Build a fader for each continuous audience control that exists.
+
+    Presence is decided by ``audience_control.audience_addresses()`` rather
+    than by assuming: gain is emitted only if that module still offers it.
+
+    Returns:
+        Zero or one Fader.
+    """
+    known = set(aud.audience_addresses())
+    gain = "%s/gain" % aud.AUDIENCE_PREFIX
+    if gain not in known:
+        return []
+    # Rests at 1.0 -- AudienceState.gain defaults to 1.0, so the pad and the
+    # show agree at startup instead of the fader lying until it is first moved.
+    return [Fader(name="aud_gain", caption="CROWD GAIN", address=gain,
+                  fill=AUDIENCE_COLOUR, default="1.0",
+                  scale_min=0.0, scale_max=1.0)]
+
+
+def actions() -> List[Action]:
+    """Build the strip's buttons: reset, audience enable, panic.
+
+    Ordered left to right by how much damage each does, PANIC last and alone
+    on the right so the hand that reaches for it in the dark has an edge to
+    aim at.
+
+    Returns:
+        The Actions whose addresses the owning modules still accept.
+    """
+    out = [Action(name="attractor_reset", caption="KNOBS 0",
+                  address="%s/reset" % ctl.ATTRACTOR_PREFIX,
+                  fill=RESET_COLOUR, button_type=BUTTON_MOMENTARY,
+                  default="0")]
+
+    known = set(aud.audience_addresses())
+    enable = "%s/enable" % aud.AUDIENCE_PREFIX
+    if enable in known:
+        # AudienceState.enabled defaults to True, so the switch ships on.
+        out.append(Action(name="audience_enable", caption="CROWD ON",
+                          address=enable, fill=AUDIENCE_COLOUR,
+                          button_type=BUTTON_TOGGLE, default="1"))
+
+    out.append(Action(name="panic", caption="PANIC",
+                      address=aud.PANIC_ADDRESS, fill=PANIC_COLOUR,
+                      button_type=BUTTON_MOMENTARY, default="0"))
+    return out
+
+
+def layout_addresses() -> List[str]:
+    """List every OSC address this layout can send.
+
+    The lockstep assertion lives against this: if a capability's address is
+    reachable from the owning module and absent here, the iPad cannot reach it.
+
+    Returns:
+        Profile addresses, then knobs, then the strip's buttons.
+    """
+    return (ctl.osc_addresses()
+            + [f.address for f in attractor_faders() + audience_faders()]
+            + [a.address for a in actions()])
+
+
+# --- Geometry ---------------------------------------------------------------
+
+def _row_split(count: int, total_w: int, min_w: int,
+               max_rows: int = 2) -> Tuple[int, int]:
+    """Split ``count`` equal cells across as few rows as stay wide enough.
+
+    The same rule `_grid` applies vertically: hold the minimum target size and
+    take another row, rather than shrink below what a thumb can hit.
+
+    Args:
+        count: Number of cells.
+        total_w: Width available to one row.
+        min_w: Narrowest acceptable cell.
+        max_rows: Cap on rows, so a runaway registry cannot eat the page.
+
+    Returns:
+        ``(rows, cell_width)``.
+    """
+    count = max(1, int(count))
+    rows = 1
+    while True:
+        per_row = -(-count // rows)                     # ceil division
+        cell_w = (total_w - STRIP_GAP * (per_row - 1)) // per_row
+        if cell_w >= min_w or rows >= max_rows:
+            return rows, cell_w
+        rows += 1
+
+
+def strip_height() -> int:
+    """Height the live-control strip needs, given what is live right now.
+
+    Computed rather than fixed, because the fader and action rows both wrap
+    when their registries grow and a fixed band would silently clip whatever
+    landed last -- the exact class of failure this whole change exists to end.
+
+    Returns:
+        Strip height in points.
+    """
+    total_w = WIDTH - 2 * MARGIN
+    fader_rows, _ = _row_split(len(attractor_faders()) + len(audience_faders()),
+                               total_w, MIN_FADER_W)
+    action_rows, _ = _row_split(len(actions()), total_w, MIN_ACTION_W)
+    # Rows are the caption, then the fader rows, then the action rows. Gaps sit
+    # BETWEEN rows, so there is one fewer gap than rows -- no trailing gap, or
+    # the strip reserves 12 pt it never draws in and PANIC stops at the wrong
+    # place.
+    height = (STRIP_LABEL_H
+              + fader_rows * STRIP_FADER_H
+              + action_rows * STRIP_ACTION_H
+              + STRIP_GAP * (fader_rows + action_rows))
+    return height
+
+
+def _usable_height() -> int:
+    """Height left for the profile grid once the title and strip are placed.
+
+    Returns:
+        Height in points.
+    """
+    return (HEIGHT - (2 * MARGIN) - LABEL_H - GAP - GAP - strip_height())
+
+
+def _grid(count: int, usable_h: Optional[int] = None) -> Tuple[int, int, int]:
     """Solve the button grid for a given number of profiles.
 
     The thumb minimum is the fixed point. One column is preferred because it
@@ -361,12 +748,15 @@ def _grid(count: int) -> Tuple[int, int, int]:
 
     Args:
         count: Number of buttons to place.
+        usable_h: Height the grid may use. Defaults to whatever the title and
+            the live-control strip leave behind.
 
     Returns:
         ``(columns, button_width, button_height)``.
     """
     count = max(1, int(count))
-    usable_h = HEIGHT - (2 * MARGIN) - LABEL_H - GAP
+    if usable_h is None:
+        usable_h = _usable_height()
     cols = 1
     while True:
         rows = -(-count // cols)                       # ceil division
@@ -378,14 +768,74 @@ def _grid(count: int) -> Tuple[int, int, int]:
     return cols, btn_w, btn_h
 
 
-def build_xml() -> str:
+def _build_strip() -> List[str]:
+    """Build the live-control strip: knob faders, then the action buttons.
+
+    Every control here comes from `attractor_faders`, `audience_faders` and
+    `actions`, which read the owning modules. Nothing in this function knows
+    the name of a knob.
+
+    Returns:
+        Child <node> elements, in draw order.
+    """
+    faders = attractor_faders() + audience_faders()
+    buttons = actions()
+    total_w = WIDTH - 2 * MARGIN
+    fader_rows, fader_w = _row_split(len(faders), total_w, MIN_FADER_W)
+    action_rows, action_w = _row_split(len(buttons), total_w, MIN_ACTION_W)
+    per_fader_row = -(-len(faders) // fader_rows) if faders else 1
+    per_action_row = -(-len(buttons) // action_rows) if buttons else 1
+
+    y = HEIGHT - MARGIN - strip_height()
+    children = [_caption("strip_title", "LIVE CONTROL", MARGIN, y,
+                         total_w, STRIP_LABEL_H, 22, _WHITE)]
+    y += STRIP_LABEL_H + STRIP_GAP
+
+    for index, fader in enumerate(faders):
+        col, row = index % per_fader_row, index // per_fader_row
+        x = MARGIN + col * (fader_w + STRIP_GAP)
+        fy = y + row * (STRIP_FADER_H + STRIP_GAP)
+        children.append(_fader(fader.name, fader.address, x, fy,
+                               fader_w, STRIP_FADER_H, fader.fill,
+                               fader.default, fader.scale_min,
+                               fader.scale_max))
+        # The caption sits in the bottom sliver so it does not hide under the
+        # handle at rest, and it is non-interactive so the drag falls through.
+        children.append(_caption("%s_text" % fader.name, fader.caption,
+                                 x, fy + STRIP_FADER_H - STRIP_LABEL_H,
+                                 fader_w, STRIP_LABEL_H, 18,
+                                 _readable_text_colour(fader.fill)))
+    y += fader_rows * (STRIP_FADER_H + STRIP_GAP)
+
+    for index, action in enumerate(buttons):
+        col, row = index % per_action_row, index // per_action_row
+        x = MARGIN + col * (action_w + STRIP_GAP)
+        by = y + row * (STRIP_ACTION_H + STRIP_GAP)
+        children.append(_button(action.name, x, by, action_w, STRIP_ACTION_H,
+                                address=action.address, fill=action.fill,
+                                button_type=action.button_type,
+                                default=action.default))
+        children.append(_caption("%s_text" % action.name, action.caption,
+                                 x, by, action_w, STRIP_ACTION_H, 30,
+                                 _readable_text_colour(action.fill)))
+    return children
+
+
+def build_xml(include_strip: bool = True) -> str:
     """Build the full layout document.
+
+    Args:
+        include_strip: False emits profile buttons only -- the document that
+            shipped before the strip existed, kept as the fallback for a
+            device that will not render a FADER. See `main`.
 
     Returns:
         The layout as an XML string.
     """
     names: List[str] = list(gp.PROFILES)
-    cols, btn_w, btn_h = _grid(len(names))
+    usable_h = _usable_height() if include_strip else (
+        HEIGHT - (2 * MARGIN) - LABEL_H - GAP)
+    cols, btn_w, btn_h = _grid(len(names), usable_h)
 
     children: List[str] = [
         _caption("title", "DJ PROFILES", MARGIN, MARGIN,
@@ -402,6 +852,9 @@ def build_xml() -> str:
         children.append(_caption("%s_text" % name, name.replace("_", " "),
                                  x, y, btn_w, btn_h, 34,
                                  _readable_text_colour(fill)))
+
+    if include_strip:
+        children.extend(_build_strip())
 
     root_props = "".join((
         _prop("b", "background", "1"),
@@ -452,6 +905,17 @@ def main() -> int:
         handle.write(xml)
     written.append((xml_path, "readable reference / hand-inspection"))
 
+    # The fallback. FADER is the one node type not checked against an authentic
+    # editor file, and a layout that will not open is the failure this project
+    # has already had once. Carrying a fader-free copy to the booth costs a few
+    # kilobytes and removes that as a way to lose the night.
+    fallback_path = os.path.join(OUT_DIR, BASENAME + FALLBACK_SUFFIX + ".tosc")
+    with open(fallback_path, "wb") as handle:
+        handle.write(zlib.compress(build_xml(include_strip=False).encode("utf-8"),
+                                   ZLIB_LEVEL))
+    written.append((fallback_path,
+                    "FALLBACK -- profile buttons only, no FADER node"))
+
     for path, note in written:
         print("wrote %s  (%d bytes)  -- %s"
               % (path, os.path.getsize(path), note))
@@ -459,7 +923,7 @@ def main() -> int:
     print("\nOSC port %d, UDP. Set Host + Send Port on the device -- they are"
           % ctl.OSC_PORT)
     print("NOT stored in the layout file. Addresses:")
-    for addr in ctl.osc_addresses():
+    for addr in layout_addresses():
         print("  " + addr)
     return 0
 
