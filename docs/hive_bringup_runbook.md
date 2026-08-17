@@ -1,9 +1,15 @@
 # HIVE bring-up — the ordered runbook
 
-> **Status as of 2026-08-17.** HIVE is built and unit-tested (757 tests green)
-> and has **never been run against any of its three live systems**: OpenAI,
-> the YouTube Live Chat API, and TouchDesigner. The remaining work is
-> *integration*, not development.
+> **Status as of 2026-08-17.** HIVE is built and unit-tested — 869 tests green
+> across the chat/OSC files, 1429 green across the whole suite — and has
+> **never been run against any of its three live systems**: OpenAI, the YouTube
+> Live Chat API, and TouchDesigner. The remaining work is *integration*, not
+> development.
+>
+> Two suite failures on 2026-08-17 (`test_movement_tracker`,
+> `test_stop_announcer`) are unrelated to HIVE: they come from uncommitted
+> camera-reader work that now opens the capture with an explicit AVFoundation
+> backend while the tests still expect the single-argument call.
 >
 > This document is the ordering. For what each component *is* and every flag it
 > takes, read [`audience_chat_bridge_runbook.md`](audience_chat_bridge_runbook.md);
