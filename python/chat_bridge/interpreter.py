@@ -172,12 +172,25 @@ class Interpreter:
         if not batch:
             return [], []
         trimmed = list(batch)[-config.BATCH_MAX_LINES:]
+
+        # Built BEFORE the try, and deliberately outside it. These read the live
+        # profile registry, so they fail for CONFIGURATION reasons -- an
+        # unimportable `dj_graphics_profiles` -- not for network ones. Inside
+        # the try, that ModuleNotFoundError was caught, counted as
+        # `interpreter_error` and the batch dropped: a permanent misconfiguration
+        # wearing the costume of a transient model failure, on every batch, with
+        # the log pointing at the wrong component. Out here it raises on the
+        # first batch instead, which is loud, immediate, and true.
+        system = build_system_prompt()
+        schema = build_schema()
+        user = render_batch(trimmed)
+
         started = time.monotonic()
         try:
             raw = self._complete(
-                system=build_system_prompt(),
-                user=render_batch(trimmed),
-                schema=build_schema(),
+                system=system,
+                user=user,
+                schema=schema,
                 model=self.model,
                 timeout=config.INTERPRETER_TIMEOUT_S,
             )

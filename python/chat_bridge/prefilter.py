@@ -27,7 +27,16 @@ _KEYWORDS = (
     "rave", "laser", "strobe", "acid", "vapor", "vapour", "mono", "uv",
     "pulse", "deep",
     # qualities / nudges
-    "glow", "bright", "dark", "dim", "flash", "trail", "smear", "shake",
+    # Every NUDGE target's own name appears here in the exact form a viewer
+    # types it -- "trails" as well as "trail", plus "chaos" and "morph", which
+    # were missing entirely. Matching is whole-word against the lowercased
+    # text, so "trail" does NOT match "trails": a viewer typing just "chaos"
+    # or "trails!" was filtered out before the model ever saw it, while "more
+    # chaos" got through on the strength of "more". That is a false negative
+    # on a bare target name, which this filter's whole design note says it
+    # would rather not have. test_chat_bridge asserts the general form.
+    "glow", "bright", "dark", "dim", "flash", "trail", "trails", "smear",
+    "chaos", "morph", "shake",
     "wobble", "zoom", "punch", "speed", "fast", "slow", "faster", "slower",
     "more", "less", "harder", "softer", "bigger", "smaller", "intense",
     "chill", "calm", "crazy", "insane", "wild",

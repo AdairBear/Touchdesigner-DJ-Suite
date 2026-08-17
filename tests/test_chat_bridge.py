@@ -15,6 +15,7 @@ Run:  ./venv/bin/python -m pytest tests/test_chat_bridge.py -v
 """
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -825,3 +826,83 @@ class TestBridgeLoop:
                   Path(bridge.log.path).read_text(encoding="utf-8").splitlines()]
         kinds = [e["event"] for e in events]
         assert "start" in kinds and "stop" in kinds
+
+
+class TestRunnableAsDocumented:
+    """The integration defects: HIVE has unit tests, but had never been RUN.
+
+    Both of these pass trivially under pytest and failed for real, because the
+    test suite puts touchdesigner/scripts on sys.path itself (lines 23-25) and
+    the documented entry point -- `python -m chat_bridge` from python/ -- does
+    not.
+    """
+
+    def test_the_profile_registry_resolves_without_the_suite_s_path_setup(self):
+        """GATE 2's whitelist must be reachable from a bare interpreter.
+
+        `validator.valid_profile_targets` imports `dj_graphics_profiles`, which
+        lives in touchdesigner/scripts. Nothing in the package used to put that
+        on sys.path, so the import raised inside `Interpreter.classify`'s try,
+        was caught as `interpreter_error`, and dropped the batch -- every batch,
+        for the whole run, while the log blamed the model. chat_bridge/__init__
+        now bootstraps the path; this asserts it from a subprocess whose only
+        sys.path entry is python/, i.e. exactly the documented invocation.
+        """
+        import subprocess
+
+        result = subprocess.run(
+            [sys.executable, "-c",
+             "from chat_bridge import validator;"
+             "print(len(validator.valid_profile_targets()))"],
+            cwd=str(REPO / "python"), capture_output=True, text=True,
+            env={"PATH": os.environ.get("PATH", "")})
+        assert result.returncode == 0, result.stderr
+        assert int(result.stdout.strip()) == len(gp.PROFILES)
+
+    def test_a_config_error_is_not_reported_as_a_model_error(self):
+        """Prompt and schema are built OUTSIDE classify's try.
+
+        A missing registry is permanent and local; a model timeout is transient
+        and remote. Counting the first as the second sends whoever is debugging
+        at 02:00 to the wrong component, and `fail-loud-observability` forbids
+        exactly that shape.
+        """
+        import chat_bridge.interpreter as interp
+
+        def explode():
+            raise ModuleNotFoundError("no module named 'dj_graphics_profiles'")
+
+        original = interp.build_schema
+        try:
+            interp.build_schema = explode
+            it = Interpreter(complete_fn=lambda **kw: '{"actions": []}')
+            with pytest.raises(ModuleNotFoundError):
+                it.classify([ChatMessage("m", "a", "a", "more glow", 0.0)])
+            # Not swallowed, so it was never miscounted as a model failure.
+            assert it.failures == 0
+        finally:
+            interp.build_schema = original
+
+
+class TestEveryTargetIsTypeable:
+    """The cost filter must not eat a target's own name.
+
+    prefilter is documented as deliberately permissive: "a false positive costs
+    a few tokens, a false negative costs a viewer their moment". Matching is
+    whole-word, so "trail" did not match "trails", and "chaos"/"morph" were
+    absent outright -- three of eight NUDGE targets were unreachable to a viewer
+    who simply typed the target's name.
+    """
+
+    @pytest.mark.parametrize("target", config.NUDGE_TARGETS)
+    def test_bare_nudge_target_name_survives_the_prefilter(self, target):
+        assert prefilter.looks_like_request(target.lower()), (
+            "a viewer typing %r is filtered out before the model sees it"
+            % target.lower())
+
+    @pytest.mark.parametrize("target", config.ONESHOT_TARGETS)
+    def test_bare_oneshot_target_name_survives_the_prefilter(self, target):
+        phrase = target.lower().replace("_", " ")
+        assert prefilter.looks_like_request(phrase), (
+            "a viewer typing %r is filtered out before the model sees it"
+            % phrase)
