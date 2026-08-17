@@ -14,7 +14,99 @@ import os
 import time
 import json
 import logging
+import threading
 from typing import Dict, Optional, List
+
+
+# Dimensions the mask pipeline + downstream TD/OBS overlay are calibrated for.
+# Capture is forced to this geometry right after read() (see run()), so whatever
+# the camera or the Insta360 Link app happens to negotiate (e.g. 1280x960) can
+# never knock the mask alignment out again. This is the original aligned 16:9 size.
+EXPECT_W, EXPECT_H = 1280, 720
+
+# (1b) MediaPipe input size -- inference runs on this downscaled frame (16:9,
+# 0.75x of 1280x720) for crisper mask edges. Mask output stays 640x480 and the
+# 1280x720 capture/overlay geometry is unchanged, so alignment holds.
+INFER_W, INFER_H = 960, 540
+# (1a) Cap heavy inference at this rate; capture stays full-rate on the reader thread.
+INFER_FPS = 24
+INFER_MIN_DT = 1.0 / INFER_FPS
+# Reader self-heal: if no fresh frame for this long, release + reopen the camera.
+# A silent AVFoundation/USB read-stall (observed after ~71 min) otherwise hangs the
+# feed until a manual restart; reopening recovers it in ~1s.
+CAM_STALL_S = 4.0
+
+
+class _CameraReader:
+    """Background camera reader (STEP 2 + self-heal).
+
+    cap.read() blocks on the next USB frame. Running it on its own thread means a
+    slow or stalled camera frame never stalls MediaPipe or the mask publish -- the
+    main loop just re-uses the last good frame/mask. If the camera goes silent for
+    CAM_STALL_S, the reader releases and reopens it (open_fn) so the feed self-heals.
+    """
+
+    def __init__(self, open_fn):
+        self._open_fn = open_fn
+        self.cap = open_fn()
+        self._lock = threading.Lock()
+        self._frame = None
+        self._id = 0
+        self._ok = False
+        self._run = True
+        self._last_ok = time.time()
+        self.reopens = 0
+        self._t = threading.Thread(target=self._loop, daemon=True)
+
+    def start(self):
+        self._t.start()
+        return self
+
+    def is_running(self):
+        return self._run
+
+    def _loop(self):
+        while self._run:
+            ok, frame = False, None
+            try:
+                ok, frame = self.cap.read()
+            except Exception:
+                ok, frame = False, None
+            if ok and frame is not None:
+                self._last_ok = time.time()
+                with self._lock:
+                    self._frame = frame
+                    self._id += 1
+                    self._ok = True
+            elif time.time() - self._last_ok > CAM_STALL_S:
+                # Silent read-stall -> reopen (same MJPG/AVFoundation/720p settings).
+                try:
+                    self.cap.release()
+                except Exception:
+                    pass
+                try:
+                    self.cap = self._open_fn()
+                    self.reopens += 1
+                    self._last_ok = time.time()
+                    logging.warning(
+                        "[capture] no frame > %.1fs -- reopened camera (reopen #%d)",
+                        CAM_STALL_S, self.reopens)
+                except Exception as e:
+                    logging.error("[capture] reopen failed: %s", e)
+                    time.sleep(0.2)
+            else:
+                time.sleep(0.005)  # brief backoff -- no busy-spin
+
+    def latest(self):
+        with self._lock:
+            return self._ok, self._frame, self._id
+
+    def stop(self):
+        self._run = False
+        try:
+            self.cap.release()
+        except Exception:
+            pass
 
 logger = logging.getLogger(__name__)
 
@@ -116,11 +208,14 @@ class MovementTracker:
         # OSC client to send to TouchDesigner
         self.osc_client = udp_client.SimpleUDPClient(osc_ip, osc_port)
 
-        # Webcam
-        self.cap = cv2.VideoCapture(camera_id)
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
-        self.cap.set(cv2.CAP_PROP_FPS, 30)
+        # Webcam -- opened via _open_capture so the reader thread can also reopen
+        # it on a silent read-stall (self-heal). See _CameraReader.
+        self.camera_id = camera_id
+        self._reader = _CameraReader(self._open_capture).start()
+        self.cap = self._reader.cap    # handle for cleanup; loop uses _reader instead
+        self._last_frame_id = -1   # id of the last frame we actually processed
+        self._last_mask = None     # last good mask, re-published while starved
+        self._last_infer_t = 0.0   # (1a) wall clock of the last heavy inference
 
         # Movement tracking state for each person
         self.prev_positions: List[Dict[str, float]] = [
@@ -142,6 +237,22 @@ class MovementTracker:
         # Initialize segmentation shared memory
         if self.enable_segmentation:
             self._init_mask_mmap()
+
+    def _open_capture(self):
+        """Open (or reopen) the camera with the pipeline's fixed settings:
+        AVFoundation backend + MJPG (compressed USB) + 1280x720 @ 30. Used at
+        startup AND by the reader thread's self-heal after a silent read-stall."""
+        cap = cv2.VideoCapture(self.camera_id, cv2.CAP_AVFOUNDATION)
+        cap.set(cv2.CAP_PROP_FOURCC, 1196444237)  # (a) MJPG fourcc: compressed USB transport
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+        cap.set(cv2.CAP_PROP_FPS, 30)
+        logging.info("[capture] negotiated %dx%d fourcc=%d fps=%.1f" % (
+            int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)),
+            int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)),
+            int(cap.get(cv2.CAP_PROP_FOURCC)),
+            cap.get(cv2.CAP_PROP_FPS)))
+        return cap
 
     # ------------------------------------------------------------------
     # Segmentation mask shared memory
@@ -531,13 +642,45 @@ class MovementTracker:
         print("Press ESC to quit")
 
         try:
-            while self.cap.isOpened():
+            while self._reader.is_running():
                 frame_start = time.time()
 
-                success, frame = self.cap.read()
-                if not success:
-                    print("Failed to read frame")
+                # STEP 2: take the newest frame the reader thread has captured.
+                success, frame, frame_id = self._reader.latest()
+                if not success or frame is None:
+                    time.sleep(0.01)          # camera not delivering yet
                     continue
+                if frame_id == self._last_frame_id:
+                    # No NEW frame since the last cook. HOLD: re-publish the last
+                    # good mask so TD's seqlock counter keeps advancing (the visual
+                    # holds the last outline) instead of freezing, then back off.
+                    if self.enable_segmentation and self._last_mask is not None:
+                        self._write_mask(self._last_mask)
+                        self.frame_counter += 1
+                    time.sleep(0.005)
+                    continue
+                self._last_frame_id = frame_id
+
+                # (1a) Throttle heavy inference to ~INFER_FPS. Capture keeps running
+                # full-rate on the reader thread; between inferences we hold the last
+                # mask so the outline stays smooth while CPU roughly halves.
+                _now = time.time()
+                if _now - self._last_infer_t < INFER_MIN_DT:
+                    if self.enable_segmentation and self._last_mask is not None:
+                        self._write_mask(self._last_mask)
+                        self.frame_counter += 1
+                    time.sleep(0.003)
+                    continue
+                self._last_infer_t = _now
+
+                # (B) Force the pipeline's calibrated geometry regardless of what the
+                # camera / Insta360 Link app negotiated, so alignment can't drift.
+                if frame.shape[1] != EXPECT_W or frame.shape[0] != EXPECT_H:
+                    frame = cv2.resize(frame, (EXPECT_W, EXPECT_H))
+
+                # (1b) MediaPipe runs on a downscaled copy (INFER_W x INFER_H). `frame`
+                # stays 1280x720 for overlay/alignment; only the inference pixels shrink.
+                infer = cv2.resize(frame, (INFER_W, INFER_H))
 
                 # NO horizontal flip: this rig's OBS Link Camera is un-mirrored, so
                 # the mask must stay in raw camera coordinates to align with it.
@@ -545,10 +688,10 @@ class MovementTracker:
                 # wrong side. TD's outline_flip.flipx is also False = no flip anywhere.)
 
                 # Convert to RGB for MediaPipe
-                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                frame_rgb = cv2.cvtColor(infer, cv2.COLOR_BGR2RGB)
 
                 # Get regions for multi-person detection
-                regions = self.detect_people_regions(frame)
+                regions = self.detect_people_regions(infer)
 
                 # Collect results for segmentation merge
                 all_results = []
@@ -560,8 +703,8 @@ class MovementTracker:
 
                     # Ensure bounds are valid
                     x1, y1 = max(0, x1), max(0, y1)
-                    x2 = min(frame.shape[1], x2)
-                    y2 = min(frame.shape[0], y2)
+                    x2 = min(infer.shape[1], x2)
+                    y2 = min(infer.shape[0], y2)
 
                     # Extract region
                     region = frame_rgb[y1:y2, x1:x2]
@@ -582,12 +725,12 @@ class MovementTracker:
                         region_width = x2 - x1
                         region_height = y2 - y1
                         for landmark in landmarks:
-                            landmark.x = (landmark.x * region_width + x1) / frame.shape[
+                            landmark.x = (landmark.x * region_width + x1) / infer.shape[
                                 1
                             ]
                             landmark.y = (
                                 landmark.y * region_height + y1
-                            ) / frame.shape[0]
+                            ) / infer.shape[0]
 
                         metrics = self.calculate_metrics(landmarks, person_id)
                         self.send_osc_messages(metrics, person_id)
@@ -609,6 +752,7 @@ class MovementTracker:
                 # ------ Segmentation mask output ------
                 if self.enable_segmentation:
                     mask = self._process_segmentation(all_results)
+                    self._last_mask = mask   # STEP 2: cache for hold-last-frame
                     self._write_mask(mask)
                     self.frame_counter += 1
 
@@ -671,7 +815,13 @@ class MovementTracker:
 
     def cleanup(self):
         """Clean up resources"""
-        self.cap.release()
+        if getattr(self, "_reader", None) is not None:
+            self._reader.stop()   # stops the thread AND releases the current camera
+        else:
+            try:
+                self.cap.release()
+            except Exception:
+                pass
         cv2.destroyAllWindows()
         for detector in self.pose_detectors:
             detector.close()

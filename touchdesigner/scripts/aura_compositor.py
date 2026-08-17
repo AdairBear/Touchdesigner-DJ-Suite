@@ -51,9 +51,17 @@ try:
         _fix_ai.par.driver = "default"
         _fix_ai.cook(force=True)
         _fix_names = list(_fix_ai.par.device.menuNames or [])
-        _fix_dev = next(
-            (n for n in _fix_names if "1824" in (n or "").lower()), None
-        ) or next((n for n in _fix_names if "blackhole" in (n or "").lower()), None)
+        # 2026-08-01 (Cowork): prefer "Serato Virtual Audio" (non-contended AND
+        # carries the master -> reactivity works). TD reading the 1824c (the device
+        # Serato drives) stalled the render on music-start -- proven live. Falls back
+        # to BlackHole (silent but safe), then 1824c.
+        # 2026-08-01: outline_glow blur is now CLAMPED, so real audio is safe. Prefer
+        # Serato Virtual Audio (carries the master -> reactivity). BlackHole/1824c fallback.
+        _fix_dev = (
+            next((n for n in _fix_names if "serato virtual" in (n or "").lower()), None)
+            or next((n for n in _fix_names if "blackhole" in (n or "").lower()), None)
+            or next((n for n in _fix_names if "1824" in (n or "").lower()), None)
+        )
         if _fix_dev:
             _fix_ai.par.device = _fix_dev
             _fix_ai.cook(force=True)
@@ -434,10 +442,16 @@ def _bootstrap_audio_chain_once():
         #      an app deliberately targets the "DJ + Analysis" multi-output; in
         #      Thomas's setup it is silent, so it is now a last-resort fallback).
         #   4. Built-in mic — last-resort fallback.
+        # 2026-08-01 (Cowork): "Serato Virtual Audio" first -- non-contended AND it
+        # carries the master (reactivity). Reading the 1824c that Serato drives
+        # stalled the render on music-start (proven live). BlackHole/1824c fall back.
+        # 2026-08-01: outline_glow blur clamped -> real audio safe. Serato Virtual Audio
+        # first (carries the master -> reactivity). BlackHole/1824c/ddj fall back.
         chosen = (
-            _find("1824c", "1824", "studio 1824", "presonus")
-            or _find("ddj-sx2", "ddj sx2", "pioneer ddj", "ddj")
+            _find("serato virtual", "serato")
             or _find("blackhole", "loopback audio", "sound siphon")
+            or _find("1824c", "1824", "studio 1824", "presonus")
+            or _find("ddj-sx2", "ddj sx2", "pioneer ddj", "ddj")
             or _find(
                 "built-in microphone", "internal microphone", "macbook", "built-in"
             )
