@@ -158,6 +158,36 @@ AUDIENCE_COLOUR = (1.0, 0.65, 0.0, 1.0)     # amber: the room, not Thomas
 RESET_COLOUR = (0.35, 0.35, 0.40, 1.0)      # inert grey
 PANIC_COLOUR = (1.0, 0.10, 0.10, 1.0)       # the only red on the page
 
+#: How each BARE audience control is drawn -- the operator's own switches over
+#: the room (`/dj/audience/<name>`), as distinct from the verbs the audience
+#: itself sends (`/dj/audience/profile|nudge|oneshot/...`). Those arrive from
+#: the chat bridge and are deliberately NOT on this pad: they are the room's
+#: input, not Thomas's, and a button that fakes an audience vote would make the
+#: operator indistinguishable from the crowd in the arbiter's own logs.
+#:
+#: `audience_control.audience_addresses` owns WHICH controls exist. These two
+#: tables own only how one is DRAWN. A bare control present there and in
+#: neither table raises in `_bare_controls` rather than being skipped -- the
+#: same reasoning as the unguarded imports at the top of this file. Silently
+#: skipping is exactly the growth defect this generator was rewritten to end.
+#:
+#: name -> (caption, resting handle position, scale_min, scale_max)
+CONTROL_FADERS: Dict[str, Tuple[str, str, float, float]] = {
+    # Rests at 1.0 -- AudienceState.gain defaults to 1.0, so the pad and the
+    # show agree at startup instead of the fader lying until it is first moved.
+    "gain": ("CROWD GAIN", "1.0", 0.0, 1.0),
+}
+#: name -> (caption, serialised default). Defaults mirror AudienceState's own,
+#: so a freshly loaded pad tells the truth about the show it is pointed at.
+CONTROL_TOGGLES: Dict[str, Tuple[str, str]] = {
+    "enable": ("CROWD ON", "1"),
+    # AudienceState.lock_profile defaults to False, so this ships off. It is
+    # the graduated response PANIC is not: the room keeps NUDGE and ONESHOT and
+    # loses only PROFILE, so a look Thomas has committed to stops being voted
+    # out from under him without killing audience interaction outright.
+    "lock_profile": ("LOCK LOOK", "0"),
+}
+
 #: buttonType values. 0 (Momentary) is confirmed against an authentic layout;
 #: every profile button has shipped with it. 1 (Toggle) is NOT confirmed -- it
 #: is used only by the audience enable switch, and it is the first thing to
@@ -612,24 +642,60 @@ def attractor_faders() -> List[Fader]:
     return out
 
 
+def _bare_controls() -> List[str]:
+    """List the operator's bare audience controls, in the module's own order.
+
+    A bare control is a single segment under ``AUDIENCE_PREFIX`` --
+    ``/dj/audience/gain``. Anything with a further segment
+    (``/dj/audience/nudge/GLOW``) is an audience verb and is filtered out; see
+    the note on CONTROL_FADERS for why those do not belong on this pad.
+
+    Raises:
+        KeyError: If the module accepts a bare control this file has no
+            presentation for. That is a capability with no button, which is the
+            defect the whole generator exists to prevent, so it is raised
+            loudly here rather than quietly dropped from the layout.
+
+    Returns:
+        Bare control names, e.g. ``["enable", "gain", "lock_profile"]``.
+    """
+    prefix = aud.AUDIENCE_PREFIX + "/"
+    out: List[str] = []
+    for address in aud.audience_addresses():
+        if not address.startswith(prefix):
+            continue
+        rest = address[len(prefix):]
+        if "/" in rest:
+            continue
+        if rest not in CONTROL_FADERS and rest not in CONTROL_TOGGLES:
+            raise KeyError(
+                "audience_control accepts %s but make_touchosc_layout has no "
+                "presentation for it -- add it to CONTROL_FADERS or "
+                "CONTROL_TOGGLES, or it reaches TouchDesigner with no button "
+                "on the pad." % address)
+        out.append(rest)
+    return out
+
+
 def audience_faders() -> List[Fader]:
     """Build a fader for each continuous audience control that exists.
 
     Presence is decided by ``audience_control.audience_addresses()`` rather
-    than by assuming: gain is emitted only if that module still offers it.
+    than by assuming: a control is emitted only if that module still offers it.
 
     Returns:
-        Zero or one Fader.
+        One Fader per live continuous control, in the module's order.
     """
-    known = set(aud.audience_addresses())
-    gain = "%s/gain" % aud.AUDIENCE_PREFIX
-    if gain not in known:
-        return []
-    # Rests at 1.0 -- AudienceState.gain defaults to 1.0, so the pad and the
-    # show agree at startup instead of the fader lying until it is first moved.
-    return [Fader(name="aud_gain", caption="CROWD GAIN", address=gain,
-                  fill=AUDIENCE_COLOUR, default="1.0",
-                  scale_min=0.0, scale_max=1.0)]
+    out: List[Fader] = []
+    for control in _bare_controls():
+        if control not in CONTROL_FADERS:
+            continue
+        caption, default, low, high = CONTROL_FADERS[control]
+        out.append(Fader(name="aud_%s" % control, caption=caption,
+                         address="%s/%s" % (aud.AUDIENCE_PREFIX, control),
+                         fill=AUDIENCE_COLOUR, default=default,
+                         scale_min=low, scale_max=high))
+    return out
 
 
 def actions() -> List[Action]:
@@ -647,13 +713,20 @@ def actions() -> List[Action]:
                   fill=RESET_COLOUR, button_type=BUTTON_MOMENTARY,
                   default="0")]
 
-    known = set(aud.audience_addresses())
-    enable = "%s/enable" % aud.AUDIENCE_PREFIX
-    if enable in known:
-        # AudienceState.enabled defaults to True, so the switch ships on.
-        out.append(Action(name="audience_enable", caption="CROWD ON",
-                          address=enable, fill=AUDIENCE_COLOUR,
-                          button_type=BUTTON_TOGGLE, default="1"))
+    # Toggles, in the order audience_control lists them, so the escalation on
+    # the pad reads left to right the way it does in the head: hand off the
+    # room (CROWD ON), take the look back (LOCK LOOK), stop everything (PANIC).
+    for control in _bare_controls():
+        if control not in CONTROL_TOGGLES:
+            continue
+        caption, default = CONTROL_TOGGLES[control]
+        # Toggle, not momentary: `audience_control.route` reads these as a
+        # VALUE, so a momentary switch would set the flag on the press and
+        # clear it again on the lift.
+        out.append(Action(name="audience_%s" % control, caption=caption,
+                          address="%s/%s" % (aud.AUDIENCE_PREFIX, control),
+                          fill=AUDIENCE_COLOUR, button_type=BUTTON_TOGGLE,
+                          default=default))
 
     out.append(Action(name="panic", caption="PANIC",
                       address=aud.PANIC_ADDRESS, fill=PANIC_COLOUR,

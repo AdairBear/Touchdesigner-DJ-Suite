@@ -495,13 +495,69 @@ class TestControlChannelsAreReadLive:
         built = {_address(node) for node in _nodes("BUTTON")}
         assert "%s/reset" % ctl.ATTRACTOR_PREFIX in built
 
-    def test_audience_enable_and_gain_are_on_the_pad(self):
-        known = set(aud.audience_addresses())
+    def test_every_bare_audience_control_is_on_the_pad(self):
+        """The general form: no operator switch exists without a control.
+
+        Derived from `audience_control.audience_addresses` rather than from a
+        list here, so this fails the moment that module grows a switch the pad
+        does not draw -- which is how `lock_profile` sat unreachable while
+        `enable` and `gain` shipped.
+        """
         built = {_address(n) for n in _nodes("BUTTON") + _nodes("FADER")}
-        for control in ("enable", "gain"):
+        for control in layout._bare_controls():
             address = "%s/%s" % (aud.AUDIENCE_PREFIX, control)
-            if address in known:
-                assert address in built, "%s exists but is unreachable" % address
+            assert address in built, "%s exists but is unreachable" % address
+
+    def test_lock_profile_is_a_toggle_the_room_cannot_clear(self):
+        """It gates the audience's PROFILE verb, so it must hold its state.
+
+        `audience_control.route` reads lock_profile as a VALUE. Momentary would
+        set the lock on the press and drop it on the lift, i.e. a lock that is
+        never on -- and its whole job is to hold a look Thomas has committed to.
+        """
+        address = "%s/lock_profile" % aud.AUDIENCE_PREFIX
+        assert address in set(aud.audience_addresses())
+        node = next(n for n in _nodes("BUTTON") if _address(n) == address)
+        props = {p.find("key").text: p.find("value").text
+                 for p in node.iter("property")}
+        assert props["buttonType"] == str(layout.BUTTON_TOGGLE)
+        # Ships off: AudienceState.lock_profile defaults to False, and a pad
+        # that claims the look is locked when it is not is worse than no lock.
+        assert next(a for a in layout.actions()
+                    if a.address == address).default == "0"
+
+    def test_a_new_bare_control_fails_loudly_instead_of_vanishing(self):
+        """A switch with no presentation must not be silently dropped.
+
+        This is the growth defect in its remaining form: `audience_control`
+        gains a control, the generator has no table entry for it, and the
+        layout comes out one button short with nothing said. `_bare_controls`
+        raises instead, so the omission is found at generation, not at 02:00.
+        """
+        original = aud.audience_addresses
+        try:
+            aud.audience_addresses = lambda: original() + [
+                "%s/shadowban" % aud.AUDIENCE_PREFIX]
+            with pytest.raises(KeyError, match="shadowban"):
+                layout.build_xml()
+        finally:
+            aud.audience_addresses = original
+        # ...and the suite has not poisoned itself.
+        layout.build_xml()
+
+    def test_the_audience_own_verbs_stay_off_the_pad(self):
+        """profile/nudge/oneshot arrive from the chat bridge, not from Thomas.
+
+        A button that fakes an audience vote would make the operator
+        indistinguishable from the room in the arbiter's accounting, and the
+        operator already has the ungated `/dj/profile/<NAME>` buttons above.
+        """
+        built = {_address(n) for n in _nodes("BUTTON") + _nodes("FADER")}
+        for address in aud.audience_addresses():
+            rest = address[len(aud.AUDIENCE_PREFIX) + 1:]
+            if address.startswith(aud.AUDIENCE_PREFIX + "/") and "/" in rest:
+                assert address not in built, (
+                    "%s is an audience verb and must not be a button" % address)
 
     def test_audience_controls_are_skipped_when_the_module_drops_them(self):
         """Presence is read, not assumed -- so a removal does not emit a dead
