@@ -1,5 +1,18 @@
 # Audio Reactivity — Baseline Reference (investigate-only, NO code changed)
 
+> ## ✅ CONFIRMED KNOWN-GOOD BASELINE (live test 2026-09-13)
+> **Working audio-analysis device: `Studio 1824c` (PreSonus) — Serato master → inputs 1–2.**
+> Thomas manually set `/project1/audio_in` **Device → Studio 1824c** during a live test on
+> 2026-09-13: it **immediately produced signal + a visible reactive body outline**.
+> On **"Serato Virtual Audio" (`VirtualAudio_UID`)** the same rig was **dead silent**
+> (`bass=mid=high=0`). This empirically confirms the git-history hypothesis (§3).
+>
+> - **Regression:** the switch to Serato-Virtual-Audio-first (the **2026-08-01** change;
+>   selector 3 in §2) is what broke reactivity on this rig.
+> - **The live fix was a manual Device-dropdown change on `/project1/audio_in` — NO code
+>   changed.** The deliberate code fix (make 1824c the single source of truth, stop the
+>   selectors fighting) is still pending Thomas's sign-off (§5).
+
 *2026-09-13. Standing reference for the audio path. **No audio code was changed to
 produce this** — the audio device-selection code is exactly as it was (== commit
 `bb3c505`); an earlier accidental change was reverted in `f93123c`. Use this doc to
@@ -74,28 +87,35 @@ The record is consistent: the **PreSonus Studio 1824c** is the proven reactive p
 (`td_startup_hooks`) to prefer **Serato Virtual Audio** first, on the theory that
 reading the 1824c "stalled the render on music-start" and that Serato Virtual Audio
 "carries the master." That switch — with the 120-frame re-assert — is what currently
-wins and is silent. **The most likely last-working device is the 1824c** (Serato
-master patched into inputs 1–2); the Aug-1 switch to Serato Virtual Audio is the
-prime suspect for the regression.
+wins and is silent.
+
+**✅ CONFIRMED (live test 2026-09-13):** manually setting `audio_in` Device → **Studio
+1824c** produced signal + a visible reactive body outline immediately; **Serato Virtual
+Audio was dead silent** on this rig. So the 1824c (Serato master → inputs 1–2) **is** the
+known-good device, and the Aug-1 switch to Serato Virtual Audio **is** the regression —
+no longer a hypothesis.
 
 ## 4. Confirmed vs Unknown
 
-**Confirmed (documented / in code):**
+**Confirmed:**
+- **✅ The working device is `Studio 1824c` (Serato master → inputs 1–2)** — live test
+  2026-09-13 (§3): manual `audio_in` Device → 1824c gave signal + reactive outline.
+- **✅ `Serato Virtual Audio` (`VirtualAudio_UID`) reads silent on this rig** and is the
+  regression (the 2026-08-01 selector-3 change).
 - The chain shape (device → audio_in → audio_spectrum → aura_compositor bands → uniforms).
 - The band/smoothing/multiplier constants (§1).
 - Three competing device selectors exist; `td_startup_hooks`'s re-assert makes **Serato
-  Virtual Audio** the final winner right now (§2).
-- History says **1824c (Serato → inputs 1–2)** was the working reactive device (§3).
+  Virtual Audio** the final winner on load right now (§2) — hence silent until the manual
+  Device change.
 
 **Unknown — confirm before changing anything:**
-1. **Which physical device actually carries Thomas's set right now.** History says 1824c
-   inputs 1–2; needs eyes-on confirmation of the current patch/routing.
-2. **Is the 1824c even in TD's device menu on the live machine?** Selector 1 fell back to
-   BlackHole in the live log, which implies `1824` was NOT enumerated (interface off/renamed,
-   or a different UID). Confirm `audio_in`'s Device dropdown list.
-3. **Does "Serato Virtual Audio" carry signal in the current Serato config?** It only does
-   if Serato's *"Make Audio Available to Other Applications"* is ON and routing the master.
-   Right now it is silent → either that toggle is off or it isn't the master.
+1. **Does the 1824c reliably enumerate in TD's Device menu on every boot?** It was present
+   for the 2026-09-13 test, but selector 1's earlier fallback to BlackHole suggests it may
+   not always be listed (interface off/renamed, or a different UID). Worth confirming it's
+   stable before hard-coding.
+2. **Why "Serato Virtual Audio" is silent here** (Serato's *"Make Audio Available to Other
+   Applications"* off / not the master) — not required for the fix, but explains the Aug-1
+   regression.
 4. **Is the Aug-1 "1824c stalls the render on music-start" freeze still real?** The comments
    say `outline_glow` blur was later clamped, which was the freeze's cause — so 1824c may now
    be safe again. Unconfirmed.
@@ -112,16 +132,16 @@ prime suspect for the regression.
    *right* device reads ~1e-4…1e-2. Distinguish "wrong device (0.0)" from "right device but
    low gain."
 
-## 5. Candidate correct settings (ranked — NOT applied)
+## 5. The fix (confirmed target — code change still pending sign-off)
 
-Deliberately not changed. When Thomas decides:
-1. **Point `audio_in` at the 1824c** (Serato master → inputs 1–2), the documented working
-   path — *if* it's enumerated and the freeze is gone. Highest confidence.
-2. **Or confirm/enable Serato Virtual Audio** (Serato Prefs → Audio → "Make Audio Available
-   to Other Applications") so the Aug-1 selection actually carries signal.
-3. Whichever is chosen: make it the single source of truth and stop the three selectors from
-   fighting (esp. the `td_startup_hooks` 120-frame re-assert), so a confirmed device can't be
-   overridden on the next load. (Design change for later, with Thomas's sign-off.)
+The correct device is settled (§confirmed banner + live test 2026-09-13):
+1. **✅ `audio_in` Device = `Studio 1824c`** (Serato master → inputs 1–2). Proven live.
+   This is the target; the manual dropdown change is the immediate fix.
+2. **Deliberate code fix (pending Thomas's sign-off):** make the 1824c the single source of
+   truth and stop the three selectors (§2) from fighting — in particular remove/redirect the
+   `td_startup_hooks` 120-frame re-assert to Serato Virtual Audio, so the confirmed device is
+   not overridden on the next project load. **No audio code changed yet** — this is recorded
+   here so the change is made deliberately, not mid-set.
 
 **The immediate, no-code check at the desk:** click `/project1/audio_in`, open its **Device**
 dropdown, and manually select the device that carries the music; watch `bass/mid/high` go
