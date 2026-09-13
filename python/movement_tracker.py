@@ -40,12 +40,16 @@ BUF_A = "/tmp/djsam_bodymask_A.raw"
 BUF_B = "/tmp/djsam_bodymask_B.raw"
 SEQ_PATH = "/tmp/djsam_bodymask.seq"
 
-# --- Visual mode (flame / lightning) ---
+# --- Visual mode (flame / lightning / ascii_lightning) ---
 # Maps the human-readable mode name to the integer index TD's Switch TOP uses.
-# Broadcast on OSC so TouchDesigner can swap the body-outline shader live.
-# See configs/visual_mode.json and docs/setup/visual_mode_toggle.md.
+# Broadcast on OSC so TouchDesigner can swap the reactive-visuals shader live.
+# See configs/visual_mode.json and docs/setup/visual_mode_toggle.md + DROP_IN.md.
+# The Switch TOP input order MUST match these indices: 0=flame, 1=lightning,
+# 2=ascii_lightning (ascii_lightning is the full-frame ASCII+lightning look).
 VISUAL_MODE_CONFIG = "configs/visual_mode.json"
-MODE_INDEX = {"flame": 0, "lightning": 1}
+MODE_INDEX = {"flame": 0, "lightning": 1, "ascii_lightning": 2}
+# Open-default look: the JSON `mode` field is the real knob (re-read on init and
+# every broadcast); this constant is only the pre-first-read fallback.
 DEFAULT_VISUAL_MODE = "flame"
 
 

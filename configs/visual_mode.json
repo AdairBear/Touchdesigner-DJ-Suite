@@ -3,7 +3,8 @@
     "mode": "flame",
     "modes": {
         "flame": 0,
-        "lightning": 1
+        "lightning": 1,
+        "ascii_lightning": 2
     },
     "osc": {
         "index_address": "/visual/mode",
