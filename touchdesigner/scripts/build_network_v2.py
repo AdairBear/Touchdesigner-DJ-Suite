@@ -27,7 +27,7 @@
 #     TD receiver ........ Script TOP `body_mask_top`, 8-bit mono, callbacks
 #                          DAT = segmentation_mask_reader.py (expands mono->RGBA)
 #   OSC .................. udp 127.0.0.1 : 7000   (NOT 9000)
-#     /visual/mode ....... float 0=flame 1=lightning  -> drives Switch TOP
+#     /visual/mode ....... float 0=flame 1=lightning 2=ascii_lightning -> Switch TOP
 #     /visual/mode_name .. string ("flame"/"lightning")
 #     /movement/person{N}/{key} ... float per-joint coords + energy
 #     /movement/person{N}/tracking_active ... 1.0/0.0
@@ -63,6 +63,7 @@ SHADER_DIR = os.path.join(REPO_ROOT, "touchdesigner", "shaders")
 SCRIPT_DIR = os.path.join(REPO_ROOT, "touchdesigner", "scripts")
 FIRE_GLSL = os.path.join(SHADER_DIR, "fire_aura.glsl")
 LIGHT_GLSL = os.path.join(SHADER_DIR, "lightning.glsl")
+ASCII_GLSL = os.path.join(SHADER_DIR, "ascii_lightning.glsl")  # /visual/mode 2
 MASK_READER = os.path.join(SCRIPT_DIR, "segmentation_mask_reader.py")
 COMPOSITOR = os.path.join(SCRIPT_DIR, "aura_compositor.py")
 
@@ -278,6 +279,7 @@ def build():
     # ----------------------------------------------------------------
     fire_src = _text_dat_from_file("fire_aura_src", FIRE_GLSL, -250, 250)
     light_src = _text_dat_from_file("lightning_src", LIGHT_GLSL, -250, 100)
+    ascii_src = _text_dat_from_file("ascii_lightning_src", ASCII_GLSL, -250, -50)
 
     def _glsl(name, src_dat, y):
         g = _make(glslTOP, name, -50, y)
@@ -309,6 +311,12 @@ def build():
 
     fire_glsl = _glsl("fire_aura_glsl", fire_src, 250)
     light_glsl = _glsl("lightning_glsl", light_src, 100)
+    # ascii_lightning: 3rd look, built + uniform-wired IDENTICALLY to the other
+    # two via the same _glsl() helper (uniname0..9). It is full-frame + opaque,
+    # so downstream bloom will wash it — keep bloom low for index 2 (a param, not
+    # a wiring step). Per-frame value push is aura_compositor.py's job (see the
+    # DROP-IN note): today the compositor writes only fire_aura_glsl.
+    ascii_glsl = _glsl("ascii_lightning_glsl", ascii_src, -50)
 
     # ----------------------------------------------------------------
     # 5. OSC IN — movement + visual/mode arrive here on port 7000.
@@ -359,11 +367,12 @@ def build():
             _log("  aura_compositor: par '%s' missing — set manually" % pname)
 
     # ----------------------------------------------------------------
-    # 6. SWITCH — index from /visual/mode (0=flame, 1=lightning).
+    # 6. SWITCH — index from /visual/mode (0=flame, 1=lightning, 2=ascii_lightning).
     #    OSC In CHOP names the channel by its address: '/visual/mode'.
+    #    Input order MUST match MODE_INDEX in python/movement_tracker.py.
     # ----------------------------------------------------------------
     visual_switch = _make(switchTOP, "visual_switch", 450, 175)
-    visual_switch.setInputs([fire_glsl, light_glsl])
+    visual_switch.setInputs([fire_glsl, light_glsl, ascii_glsl])
     try:
         # Bind the switch index to the live OSC channel. Falls back to 0.
         visual_switch.par.index.expr = (
