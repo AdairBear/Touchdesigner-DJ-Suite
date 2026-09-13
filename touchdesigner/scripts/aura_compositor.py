@@ -51,9 +51,28 @@ try:
         _fix_ai.par.driver = "default"
         _fix_ai.cook(force=True)
         _fix_names = list(_fix_ai.par.device.menuNames or [])
-        _fix_dev = next(
-            (n for n in _fix_names if "1824" in (n or "").lower()), None
-        ) or next((n for n in _fix_names if "blackhole" in (n or "").lower()), None)
+        # 2026-09-13 (desk fix): use the EXPLICIT device from
+        # configs/visual_mode.json "audio_device_uid" (default BlackHole2ch_UID),
+        # NOT an auto-grab of "Serato Virtual Audio" -- that device was SILENT and
+        # killed reactivity (bass/mid/high all 0). One knob: edit that JSON field to
+        # whatever carries your set. Match the UID exactly, else fall back to BlackHole.
+        _want_uid = "BlackHole2ch_UID"
+        try:
+            import json as _json
+
+            _want_uid = (
+                _json.load(
+                    open(
+                        "/Users/thomasadair/projects/touchdesigner-dj-suite/configs/visual_mode.json"
+                    )
+                ).get("audio_device_uid", _want_uid)
+                or _want_uid
+            )
+        except Exception:
+            pass
+        _fix_dev = next((n for n in _fix_names if n == _want_uid), None) or next(
+            (n for n in _fix_names if "blackhole" in (n or "").lower()), None
+        )
         if _fix_dev:
             _fix_ai.par.device = _fix_dev
             _fix_ai.cook(force=True)
@@ -434,10 +453,30 @@ def _bootstrap_audio_chain_once():
         #      an app deliberately targets the "DJ + Analysis" multi-output; in
         #      Thomas's setup it is silent, so it is now a last-resort fallback).
         #   4. Built-in mic — last-resort fallback.
+        # 2026-09-13 (desk fix): prefer the EXPLICIT device from
+        # configs/visual_mode.json "audio_device_uid" (default BlackHole2ch_UID),
+        # NOT "Serato Virtual Audio" (that device was SILENT here -> bass/mid/high
+        # all 0). Serato is demoted to a fallback. One knob: edit that JSON field.
+        _want_uid = "BlackHole2ch_UID"
+        try:
+            import json as _json
+
+            _want_uid = (
+                _json.load(
+                    open(
+                        "/Users/thomasadair/projects/touchdesigner-dj-suite/configs/visual_mode.json"
+                    )
+                ).get("audio_device_uid", _want_uid)
+                or _want_uid
+            )
+        except Exception:
+            pass
         chosen = (
-            _find("1824c", "1824", "studio 1824", "presonus")
-            or _find("ddj-sx2", "ddj sx2", "pioneer ddj", "ddj")
+            next((n for n in dev_names if n == _want_uid), None)
             or _find("blackhole", "loopback audio", "sound siphon")
+            or _find("1824c", "1824", "studio 1824", "presonus")
+            or _find("ddj-sx2", "ddj sx2", "pioneer ddj", "ddj")
+            or _find("serato virtual", "serato")
             or _find(
                 "built-in microphone", "internal microphone", "macbook", "built-in"
             )

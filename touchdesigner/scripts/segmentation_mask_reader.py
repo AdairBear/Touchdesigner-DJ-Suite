@@ -181,6 +181,10 @@ def _read_frame():
         np.frombuffer(raw, dtype=np.uint8).reshape(MASK_H, MASK_W).astype(np.float32)
         / 255.0
     )
+    # 2026-09-13 (desk fix): mask arrived UPSIDE DOWN (numpy row 0 = top, but the
+    # TD Script TOP texture origin is bottom-left). Flip vertically so the body
+    # is right-way-up. copyNumpyArray copies on assignment, so a flipud view is fine.
+    gray = np.flipud(gray)
     rgba = np.empty((MASK_H, MASK_W, 4), dtype=np.float32)
     rgba[..., 0] = gray
     rgba[..., 1] = gray
