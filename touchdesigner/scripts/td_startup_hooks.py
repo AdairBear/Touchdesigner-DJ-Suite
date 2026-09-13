@@ -194,15 +194,23 @@ def _reduce_render_load():
         _log("render_load", "ERROR", e)
 
 
-# --- Audio-in device -> reactivity source (2026-08-01, Cowork) -------------
-# ROOT-CAUSE FIX (proven live): TD's audio_in reading the PreSonus 1824c -- the
-# device Serato drives -- stalled the render on music-start. We now point audio_in
-# at "Serato Virtual Audio" (Serato's "Make Audio Available to Other Applications"
-# virtual device): non-contended AND it carries the real master, so beat-reactivity
-# works. Falls back to BlackHole (safe but silent), then leaves the default.
-# aura_compositor also force-sets this device on load; we set it here AND re-assert
-# ~4s later so we win that race. Reversible: delete this function + its tuple entry
-# (prior working value before this change was BlackHole2ch_UID).
+# --- Audio-in device -> reactivity source (2026-09-13, corrected) ----------
+# SINGLE OWNER of the audio_in device. This is the last writer (it re-asserts at
+# frame 120), so whatever it picks is what the rig ends on. It must therefore
+# agree with aura_compositor's on-load pick (also 1824c) so the two never fight.
+#
+# HISTORY: the 2026-08-01 "Cowork" version pointed this at "Serato Virtual Audio"
+# on the theory that the 1824c "stalled the render on music-start" and that the
+# virtual device carried the master. In Thomas's actual setup Serato Virtual
+# Audio is SILENT -- it carries no signal -- so this line killed reactivity on
+# every launch (compositor set 1824c on load; this slammed it back to the silent
+# device at frame 120). Confirmed live 2026-09-13: the 1824c gives a clean,
+# reactive outline and shows NO render stall. The old stall claim is stale.
+#
+# The Serato master is physically patched into PreSonus Studio 1824c inputs 1-2
+# (OBS already captures it there) -- the proven live signal path. Match "1824"
+# first, then the Pioneer DDJ (also carries the master in some Serato configs),
+# then BlackHole only as a last-resort silent fallback. Reversible: git revert.
 def _audio_in_reactive_source():
     ai = op("/project1/audio_in")
     if ai is None:
@@ -218,15 +226,25 @@ def _audio_in_reactive_source():
                     return nm
             return None
 
-        # 2026-08-01: with the outline_glow blur CLAMPED (size capped ~52px) real audio
-        # no longer freezes the cook, so target Serato Virtual Audio (carries the master
-        # -> reactivity works). BlackHole is the safe silent fallback if it's absent.
-        dev = _pick("serato virtual") or _pick("serato") or _pick("blackhole")
+        # 1824c is the proven live signal path (Serato master -> 1824c in 1-2).
+        # DDJ is an equivalent source in some configs. BlackHole is silent in
+        # this setup, so it is only a last-resort fallback (keeps audio_in valid
+        # rather than leaving an unrelated default selected).
+        dev = (
+            _pick("1824c")
+            or _pick("1824")
+            or _pick("studio 1824")
+            or _pick("presonus")
+            or _pick("ddj-sx2")
+            or _pick("ddj")
+            or _pick("blackhole")
+        )
         if dev is None:
             _log("audio_in_src", "NO-DEVICE", "left %r" % ai.par.device.eval())
             return
         ai.par.device = dev
-        # Re-assert after aura_compositor's on-load device force (~4s @30fps).
+        # Re-assert after aura_compositor's on-load device force (~4s @30fps) so
+        # this owner wins the race and the 1824c sticks.
         run("op('/project1/audio_in').par.device = %r" % dev, delayFrames=120)
         _log("audio_in_src", "OK", "device -> %s (+re-assert @120f)" % dev)
     except Exception as e:
