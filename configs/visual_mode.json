@@ -1,8 +1,6 @@
 {
     "_comment": "Selects the active body-outline shader. movement_tracker.py reads this file ~1x/sec and broadcasts it on OSC so TouchDesigner can switch shaders live. Edit 'mode' and save — no tracker restart needed. See docs/setup/visual_mode_toggle.md.",
     "mode": "flame",
-    "_audio_comment": "Audio-analysis input device UID for /project1/audio_in. THE knob for reactivity: set this to whatever device carries your set (BlackHole2ch_UID, VirtualAudio_UID, an interface UID, ...). Both audio setters honor it; they no longer auto-grab Serato Virtual Audio.",
-    "audio_device_uid": "BlackHole2ch_UID",
     "modes": {
         "flame": 0,
         "lightning": 1,

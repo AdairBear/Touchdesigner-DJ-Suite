@@ -218,31 +218,17 @@ def _audio_in_reactive_source():
                     return nm
             return None
 
-        # 2026-09-13 (desk fix): honor the EXPLICIT configs/visual_mode.json
-        # "audio_device_uid" (default BlackHole2ch_UID) instead of auto-grabbing
-        # Serato Virtual Audio (silent -> killed reactivity, bass/mid/high all 0).
-        # Set ONCE at load; the 120-frame re-assert is REMOVED so a manual Device
-        # dropdown change on audio_in sticks.
-        _want_uid = "BlackHole2ch_UID"
-        try:
-            import json as _json
-
-            _want_uid = (
-                _json.load(
-                    open(
-                        "/Users/thomasadair/projects/touchdesigner-dj-suite/configs/visual_mode.json"
-                    )
-                ).get("audio_device_uid", _want_uid)
-                or _want_uid
-            )
-        except Exception:
-            pass
-        dev = next((n for n in names if n == _want_uid), None) or _pick("blackhole")
+        # 2026-08-01: with the outline_glow blur CLAMPED (size capped ~52px) real audio
+        # no longer freezes the cook, so target Serato Virtual Audio (carries the master
+        # -> reactivity works). BlackHole is the safe silent fallback if it's absent.
+        dev = _pick("serato virtual") or _pick("serato") or _pick("blackhole")
         if dev is None:
             _log("audio_in_src", "NO-DEVICE", "left %r" % ai.par.device.eval())
             return
         ai.par.device = dev
-        _log("audio_in_src", "OK", "device -> %s (explicit; no re-assert)" % dev)
+        # Re-assert after aura_compositor's on-load device force (~4s @30fps).
+        run("op('/project1/audio_in').par.device = %r" % dev, delayFrames=120)
+        _log("audio_in_src", "OK", "device -> %s (+re-assert @120f)" % dev)
     except Exception as e:
         _log("audio_in_src", "ERROR", e)
 
@@ -264,7 +250,8 @@ def _apply_glow_transient():
             _log("glow_transient", "MISSING", "/project1/outline_glow")
             return
         og.par.size.expr = (
-            "12 + min(op('fx_kick_env')['bass']*40 + op('fx_snare_env')['high']*15, 40)"
+            "12 + min(op('fx_kick_env')['bass']*40 + "
+            "op('fx_snare_env')['high']*15, 40)"
         )
         _log("glow_transient", "OK", "size -> kick/snare punch (clamped 40)")
     except Exception as e:
@@ -341,16 +328,15 @@ def _apply_rave_look():
     # 1) NEON/UV palette (no orange -> no brown). 5 anchors, each row = this + next.
     def _palette():
         tbl = op("/project1/fx_palette_table")
-        CY = (0.0, 1.0, 1.0)  # electric cyan
-        MG = (1.0, 0.0, 1.0)  # UV magenta
-        GR = (0.35, 1.0, 0.06)  # acid green
-        PK = (1.0, 0.06, 0.55)  # hot pink
-        VT = (0.6, 0.0, 1.0)  # electric violet
+        CY = (0.0, 1.0, 1.0)      # electric cyan
+        MG = (1.0, 0.0, 1.0)      # UV magenta
+        GR = (0.35, 1.0, 0.06)    # acid green
+        PK = (1.0, 0.06, 0.55)    # hot pink
+        VT = (0.6, 0.0, 1.0)      # electric violet
         rows = [CY + MG, MG + GR, GR + PK, PK + VT, VT + CY]
         tbl.clear()
         for row in rows:
             tbl.appendRow(["%.4f" % v for v in row])
-
     _step("palette", _palette)
 
     # 2) engine: bigger snare pop + faster sweep (more variation over time)
@@ -360,7 +346,6 @@ def _apply_rave_look():
         pe = op("/project1/fx_palette_engine")
         if pe is not None:
             pe.cook(force=True)
-
     _step("engine", _engine)
 
     # 3) purer neon: desaturate the base more before the palette multiply
@@ -368,23 +353,20 @@ def _apply_rave_look():
         m = op("/project1/fx_palette_mono")
         if m is not None and hasattr(m.par, "saturationmult"):
             m.par.saturationmult = 0.12
-
     _step("mono", _mono)
 
     # 4) BIG brightness pulse on the outline itself on every kick
     def _outline_bright():
-        op(
-            "/project1/outline_level"
-        ).par.brightness1.expr = "2.5 + op('fx_kick_env')['bass'] * 6"
-
+        op("/project1/outline_level").par.brightness1.expr = (
+            "2.5 + op('fx_kick_env')['bass'] * 6"
+        )
     _step("outline_bright", _outline_bright)
 
     # 5) bigger kick flash layer
     def _kick_bright():
-        op(
-            "/project1/fx_kick_bright"
-        ).par.brightness1.expr = "1 + op('fx_kick_env')['bass'] * 8"
-
+        op("/project1/fx_kick_bright").par.brightness1.expr = (
+            "1 + op('fx_kick_env')['bass'] * 8"
+        )
     _step("kick_bright", _kick_bright)
 
     # 6) zoom/scale punch on kick (guarded: transformTOP param name varies)
@@ -400,7 +382,6 @@ def _apply_rave_look():
                 break
         if not done and hasattr(ex.par, "scale"):
             ex.par.scale.expr = expr
-
     _step("zoom", _zoom)
 
     # 7) UV fire aura (kill the orange tint that browned the mix)
@@ -409,22 +390,19 @@ def _apply_rave_look():
         ft.par.colorr = 1.0
         ft.par.colorg = 0.1
         ft.par.colorb = 0.9
-
     _step("fire_uv", _fire)
 
     # 8) trails reduced ~10-15% (0.92 -> 0.89 persistence base)
     def _trails():
-        op(
-            "/project1/fx_trail_hsv"
-        ).par.valuemult.expr = "0.890000 - op('fx_lfo_decay')['chan1'] * 0.03"
-
+        op("/project1/fx_trail_hsv").par.valuemult.expr = (
+            "0.890000 - op('fx_lfo_decay')['chan1'] * 0.03"
+        )
     _step("trails", _trails)
 
     # 9) auto-cycle visual mode (fire/lightning) every 30s -> evolving variation
     def _modes():
         vs = op("/project1/visual_switch")
         vs.par.index.expr = "int(absTime.seconds / 30.0) % 2"
-
     _step("modes", _modes)
 
 
@@ -443,9 +421,7 @@ def _apply_rave_look():
 #
 # Runs AFTER rave_look in the tuple below so a profile wins over the base look.
 # Reversible: delete this function and its tuple entry.
-_PROFILE_SCRIPTS_DIR = (
-    "/Users/thomasadair/projects/touchdesigner-dj-suite/touchdesigner/scripts"
-)
+_PROFILE_SCRIPTS_DIR = "/Users/thomasadair/projects/touchdesigner-dj-suite/touchdesigner/scripts"
 
 
 def _current_toe_name():
@@ -484,11 +460,8 @@ def _apply_profile_for_this_toe():
         return
 
     result = _gp.apply_profile(profile)
-    _log(
-        "graphics_profile",
-        "OK" if result.get("applied") else "FAILED",
-        "%s (from filename %s)" % (profile, name),
-    )
+    _log("graphics_profile", "OK" if result.get("applied") else "FAILED",
+         "%s (from filename %s)" % (profile, name))
     _report["graphics_profile"] = profile
 
 
