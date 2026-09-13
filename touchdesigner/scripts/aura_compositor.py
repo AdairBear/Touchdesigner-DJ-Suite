@@ -638,24 +638,29 @@ def onFrameStart(frame):
             pass
 
     # ---- Update GLSL Shader Uniforms ----
-    glsl = op("fire_aura_glsl")
-    if glsl is not None:
-        # Time is automatic via iTime uniform, but we push custom uniforms
-        try:
-            # 0-INDEXED value pars: value0x..value8x map to uniname0..8.
-            # (Was value1x..value9x — an off-by-one that wrote every band one
-            # slot high. uTime = uniname9/value9x stays shader-driven.)
-            glsl.par.value0x = flame_intensity  # uFlameIntensity (uniname0)
-            glsl.par.value1x = turbulence  # uTurbulence    (uniname1)
-            glsl.par.value2x = distortion  # uDistortion    (uniname2)
-            glsl.par.value3x = sparkle  # uSparkle       (uniname3)
-            glsl.par.value4x = motion_norm  # uMotionEnergy  (uniname4)
-            glsl.par.value5x = bass_smooth  # uBassEnergy    (uniname5)
-            glsl.par.value6x = mid_smooth  # uMidEnergy     (uniname6)
-            glsl.par.value7x = high_smooth  # uHighEnergy    (uniname7)
-            glsl.par.value8x = burst_decay  # uBurstDecay    (uniname8)
-        except Exception:
-            pass
+    # Fan the SAME per-frame uniforms out to all three look TOPs so lightning and
+    # ascii_lightning react to audio too (not just fire). Each is existence-guarded
+    # so a look that isn't built yet (e.g. ascii_lightning_glsl before
+    # build_network_v2.py is re-run) is simply skipped.
+    for _glsl_name in ("fire_aura_glsl", "lightning_glsl", "ascii_lightning_glsl"):
+        glsl = op(_glsl_name)
+        if glsl is not None:
+            # Time is automatic via iTime uniform, but we push custom uniforms
+            try:
+                # 0-INDEXED value pars: value0x..value8x map to uniname0..8.
+                # (Was value1x..value9x — an off-by-one that wrote every band one
+                # slot high. uTime = uniname9/value9x stays shader-driven.)
+                glsl.par.value0x = flame_intensity  # uFlameIntensity (uniname0)
+                glsl.par.value1x = turbulence  # uTurbulence    (uniname1)
+                glsl.par.value2x = distortion  # uDistortion    (uniname2)
+                glsl.par.value3x = sparkle  # uSparkle       (uniname3)
+                glsl.par.value4x = motion_norm  # uMotionEnergy  (uniname4)
+                glsl.par.value5x = bass_smooth  # uBassEnergy    (uniname5)
+                glsl.par.value6x = mid_smooth  # uMidEnergy     (uniname6)
+                glsl.par.value7x = high_smooth  # uHighEnergy    (uniname7)
+                glsl.par.value8x = burst_decay  # uBurstDecay    (uniname8)
+            except Exception:
+                pass
 
     # ---- Write back to audio_params Constant CHOP (for monitoring/debugging) ----
     ap = op("audio_params")
