@@ -1,6 +1,6 @@
 {
-  "generated_from": "/Users/thomasadair/Desktop/DJ_Graphics_LIVE.toe",
-  "canonical_sha256": "8a1ffd5e2e76c8c936985f0704f8e16627312d839fb0bd0a68bd856d6499965a",
+  "generated_from": "/Users/thomasadair/Desktop/DJ_Graphics_LIVE_TEMPLATE.toe",
+  "canonical_sha256": "86e336db6d1f58db58ca54b5ebf2e0e821d677d6445c3bf3d07a588496b5362f",
   "note": "Each copy boots into its profile via the filename, read by td_startup_hooks -> dj_graphics_profiles.profile_from_toe_name(). The canonical file has no dj_launcher_ prefix, so the hook is a no-op for it.",
   "profiles": [
     {
@@ -8,56 +8,63 @@
       "description": "The shipped look. Full-spectrum neon sweep, kick jumps colour, big snare pop.",
       "file": "dj_launcher_UV_RAVE.toe",
       "path": "/Users/thomasadair/projects/touchdesigner-dj-suite/touchdesigner/profiles/dj_launcher_UV_RAVE.toe",
-      "sha256": "8a1ffd5e2e76c8c936985f0704f8e16627312d839fb0bd0a68bd856d6499965a"
+      "sha256": "86e336db6d1f58db58ca54b5ebf2e0e821d677d6445c3bf3d07a588496b5362f"
     },
     {
       "profile": "DEEP_LASER",
       "description": "Deep/rolling. Long cold trails, slow sweep, locked to lightning, energy-fed.",
       "file": "dj_launcher_DEEP_LASER.toe",
       "path": "/Users/thomasadair/projects/touchdesigner-dj-suite/touchdesigner/profiles/dj_launcher_DEEP_LASER.toe",
-      "sha256": "8a1ffd5e2e76c8c936985f0704f8e16627312d839fb0bd0a68bd856d6499965a"
+      "sha256": "86e336db6d1f58db58ca54b5ebf2e0e821d677d6445c3bf3d07a588496b5362f"
     },
     {
       "profile": "STROBE_ACID",
       "description": "Peak time. Near-zero trails, violent kick flash and zoom, fast mode cycle.",
       "file": "dj_launcher_STROBE_ACID.toe",
       "path": "/Users/thomasadair/projects/touchdesigner-dj-suite/touchdesigner/profiles/dj_launcher_STROBE_ACID.toe",
-      "sha256": "8a1ffd5e2e76c8c936985f0704f8e16627312d839fb0bd0a68bd856d6499965a"
+      "sha256": "86e336db6d1f58db58ca54b5ebf2e0e821d677d6445c3bf3d07a588496b5362f"
     },
     {
       "profile": "VAPOR_UV",
       "description": "Melodic/softer. Pink-violet wash, gentle kick, wide sweep, locked to fire.",
       "file": "dj_launcher_VAPOR_UV.toe",
       "path": "/Users/thomasadair/projects/touchdesigner-dj-suite/touchdesigner/profiles/dj_launcher_VAPOR_UV.toe",
-      "sha256": "8a1ffd5e2e76c8c936985f0704f8e16627312d839fb0bd0a68bd856d6499965a"
+      "sha256": "86e336db6d1f58db58ca54b5ebf2e0e821d677d6445c3bf3d07a588496b5362f"
     },
     {
       "profile": "MONO_PULSE",
       "description": "Minimal/clean. Single cyan-to-white axis; all reactivity in brightness and glow.",
       "file": "dj_launcher_MONO_PULSE.toe",
       "path": "/Users/thomasadair/projects/touchdesigner-dj-suite/touchdesigner/profiles/dj_launcher_MONO_PULSE.toe",
-      "sha256": "8a1ffd5e2e76c8c936985f0704f8e16627312d839fb0bd0a68bd856d6499965a"
+      "sha256": "86e336db6d1f58db58ca54b5ebf2e0e821d677d6445c3bf3d07a588496b5362f"
+    },
+    {
+      "profile": "GLITCH",
+      "description": "Frenetic/low-inertia. Strobes on the amen break: discrete gates, short trails, drama-gated flash. Needs the fx_react bus.",
+      "file": "dj_launcher_GLITCH.toe",
+      "path": "/Users/thomasadair/projects/touchdesigner-dj-suite/touchdesigner/profiles/dj_launcher_GLITCH.toe",
+      "sha256": "86e336db6d1f58db58ca54b5ebf2e0e821d677d6445c3bf3d07a588496b5362f"
     },
     {
       "profile": "ATTRACTOR",
       "description": "Chaotic-attractor engine. Lorenz->Thomas->Aizawa, morphing with the section.",
       "file": "dj_launcher_ATTRACTOR.toe",
       "path": "/Users/thomasadair/projects/touchdesigner-dj-suite/touchdesigner/profiles/dj_launcher_ATTRACTOR.toe",
-      "sha256": "8a1ffd5e2e76c8c936985f0704f8e16627312d839fb0bd0a68bd856d6499965a"
+      "sha256": "86e336db6d1f58db58ca54b5ebf2e0e821d677d6445c3bf3d07a588496b5362f"
     },
     {
       "profile": "ATTRACTOR_LORENZ",
       "description": "Locked to Lorenz. The recognisable butterfly, cold palette, long tails.",
       "file": "dj_launcher_ATTRACTOR_LORENZ.toe",
       "path": "/Users/thomasadair/projects/touchdesigner-dj-suite/touchdesigner/profiles/dj_launcher_ATTRACTOR_LORENZ.toe",
-      "sha256": "8a1ffd5e2e76c8c936985f0704f8e16627312d839fb0bd0a68bd856d6499965a"
+      "sha256": "86e336db6d1f58db58ca54b5ebf2e0e821d677d6445c3bf3d07a588496b5362f"
     },
     {
       "profile": "ATTRACTOR_AIZAWA",
       "description": "Peak time. Aizawa knot, dense and fast, acid/magenta, hard kick response.",
       "file": "dj_launcher_ATTRACTOR_AIZAWA.toe",
       "path": "/Users/thomasadair/projects/touchdesigner-dj-suite/touchdesigner/profiles/dj_launcher_ATTRACTOR_AIZAWA.toe",
-      "sha256": "8a1ffd5e2e76c8c936985f0704f8e16627312d839fb0bd0a68bd856d6499965a"
+      "sha256": "86e336db6d1f58db58ca54b5ebf2e0e821d677d6445c3bf3d07a588496b5362f"
     }
   ]
 }

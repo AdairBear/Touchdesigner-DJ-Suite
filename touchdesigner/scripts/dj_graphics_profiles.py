@@ -169,6 +169,14 @@ AUDIENCE_WHITEOUT_GAIN = 5.0
 #: address and no chat phrasing that changes it. See the AUDIENCE INVARIANT.
 STROBE_HZ_CAP = 2.0
 
+# --- Per-profile flame floor (reactivity foundation §8) ------------------------
+#: Storage key on PARENT that aura_compositor reads for the flame floor. Absent
+#: (or None) means "use the compositor's REACT_FLOOR", i.e. the shipped look.
+REACT_FLOOR_STORAGE_KEY = "react_floor"
+#: Upper bound for Profile.react_floor -- the compositor's REACT_CAP. A floor at
+#: or above the cap would pin the flame and remove all reactivity.
+REACT_FLOOR_MAX = 1.0
+
 # --- Neon/UV palette guard ---------------------------------------------------
 #: Hue band (degrees) that muddied to brown in the old CYAN->ORANGE->PURPLE
 #: palette once it was multiplied down. Banned outright: this is the "no brown"
@@ -244,8 +252,15 @@ class Profile:
             floor. 0 (default) = no term.
         needs_react_bus: Set True for a profile whose expressions reference
             fx_react channels. Documents the dependency the way ``attractor``
-            documents the attractor-pipeline dependency; applying it without the
-            bus is not an error, it just renders inert gate terms.
+            documents the attractor-pipeline dependency. apply_profile() REFUSES
+            such a profile when fx_react is absent (the current look stays up):
+            a dead op('fx_react') reference would error every bound parameter.
+        react_floor: Minimum flame intensity the aura compositor holds while
+            this profile is active, or None (default) for the compositor's own
+            REACT_FLOOR (0.30, the shipped UV_RAVE look). A low floor lets hits
+            punch up from near-black instead of from a permanent glow -- the
+            "no dynamic range" half of the frenetic fix. Scoped per profile so
+            UV_RAVE is unchanged.
         attractor: An ``attractor_engine.AttractorSpec``, or None for the five
             original silhouette looks. A profile that carries one renders a
             strange-attractor point cloud INTO the same fx_ chain, upstream of
@@ -283,6 +298,7 @@ class Profile:
         energy_fast_gain: float = 0.0,
         drama_gate_gain: float = 0.0,
         needs_react_bus: bool = False,
+        react_floor: Optional[float] = None,
     ) -> None:
         self.name = name
         self.description = description
@@ -310,6 +326,7 @@ class Profile:
         self.energy_fast_gain = float(energy_fast_gain)
         self.drama_gate_gain = float(drama_gate_gain)
         self.needs_react_bus = bool(needs_react_bus)
+        self.react_floor = None if react_floor is None else float(react_floor)
 
     def __repr__(self) -> str:  # pragma: no cover - debug convenience
         return "<Profile %s: %s>" % (self.name, self.description)
@@ -436,6 +453,11 @@ def validate_profile(profile: Profile) -> List[str]:
             "inertia 'high' with a per-hit gate gain is a contradiction -- a "
             "high-inertia look should not strobe on the beat"
         )
+
+    if profile.react_floor is not None and not (
+            0.0 <= profile.react_floor <= REACT_FLOOR_MAX):
+        problems.append("react_floor %r must be in [0, %g]"
+                        % (profile.react_floor, REACT_FLOOR_MAX))
 
     if profile.attractor is not None:
         problems += ["attractor: " + p for p in ae.validate_spec(profile.attractor)]
@@ -767,7 +789,7 @@ def trail_valuemult_expr(profile: Profile, with_energy: bool = True,
     terms = "%g - op('fx_lfo_decay')['chan1'] * 0.03" % base
     if with_energy and profile.trail_energy_gain > 0.0:
         terms += " + (%s - 1.0) * %g" % (ENERGY, profile.trail_energy_gain)
-    # Fast-energy trail term: rides the ~1 s fx_master_fast (centred at 0.5)
+    # Fast-energy trail term: rides fx_react's normalized ~1 s energy (centred at 0.5)
     # instead of the 30 s DC energy, so trails breathe with the bar. Summed
     # INSIDE the min(..., cap) below, so it cannot cross the runaway line. Guard
     # keeps the string byte-identical for every profile that leaves this 0.
@@ -1157,6 +1179,7 @@ register(Profile(
     drama_gate_gain=4.0,    # extra flash only above the energy floor (the drop)
     energy_fast_gain=0.0,   # trails stay short; freneticism comes from the gates
     needs_react_bus=True,
+    react_floor=0.05,       # hits punch from near-black (UV_RAVE keeps 0.30)
 ))
 
 # -----------------------------------------------------------------------------
@@ -1618,6 +1641,16 @@ def apply_profile(name: str = DEFAULT_PROFILE) -> Dict[str, Any]:
         report.append("ERR  no TD context")
         return result
 
+    # A bus-dependent look (GLITCH) binds op('fx_react')[...] in its expressions.
+    # Without the bus every one of those parameters would error, so refuse and
+    # leave the current look up. Checked before anything is touched.
+    if prof.needs_react_bus and _resolve("fx_react") is None:
+        _log("%s needs the fx_react bus -- run install_react_bus.py first; "
+             "current look left unchanged" % prof.name)
+        report.append("ERR  fx_react absent -- %s not applied "
+                      "(run touchdesigner/scripts/install_react_bus.py)" % prof.name)
+        return result
+
     _log("=== applying %s === %s" % (prof.name, prof.description))
 
     # fx_master only exists once extend_dj_graphics.py has built the evolution
@@ -1793,6 +1826,21 @@ def apply_profile(name: str = DEFAULT_PROFILE) -> Dict[str, Any]:
             % ((prof.attractor.system,) + ae.resolve_counts(
                 prof.attractor.seeds, prof.attractor.trail))))
     _step("attractor", _attractor, report)
+
+    # --- aura flame floor (read per frame by aura_compositor) ----------------
+    def _react_floor() -> None:
+        root = op(PARENT)  # noqa: F821 - TD global
+        if prof.react_floor is None:
+            root.unstore(REACT_FLOOR_STORAGE_KEY)
+            report.append("OK   react_floor = compositor default")
+        else:
+            root.store(REACT_FLOOR_STORAGE_KEY, prof.react_floor)
+            report.append("OK   react_floor = %g" % prof.react_floor)
+        # Never let a saved .toe boot with a non-default floor: the reload path
+        # (td_startup_hooks._apply_rave_look) sets UV_RAVE's expressions directly
+        # and does not come through here to clear it.
+        root.storeStartupValue(REACT_FLOOR_STORAGE_KEY, None)
+    _step("react_floor", _react_floor, report)
 
     if missing:
         report.append("WARN missing nodes: %s (run extend_dj_graphics.py first)"

@@ -153,6 +153,15 @@ def make_op(kick=1.0, snare=1.0, energy=1.5, lfo_decay=0.0, noise=1.0,
         "attr_dj": FakeCHOP({name: 0.0 for name in gp.ae.DJ_CHANNELS}),
         "fx_palette_engine": FakeCHOP({"primaryR": 0.5, "primaryG": 0.5,
                                        "primaryB": 0.5}),
+        # The fx_react bus. Only GLITCH reads it; the gates track kick/snare so
+        # the worst-case inputs above drive the gate terms too and the audience
+        # caps are exercised with every per-hit term live.
+        "fx_react": FakeCHOP({
+            "kick": kick, "snare": snare,
+            "kick_gate": kick, "snare_gate": snare,
+            "bass": 1.0, "mid": 1.0, "high": 1.0,
+            "energy_slow": energy, "energy_fast": 1.0, "drama": 1.0,
+        }),
     }
     return lambda path: world.get(path)
 

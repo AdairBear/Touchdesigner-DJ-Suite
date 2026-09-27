@@ -113,6 +113,11 @@ REACT_GAIN = 1.7            # final gain into flame
 # not white). Reactivity rides between floor and cap.
 REACT_FLOOR = 0.30          # min flame base — constant colored look, never black
 REACT_CAP = 1.0             # max flame base — below white-hot (kills white edge)
+# Per-profile override of REACT_FLOOR (reactivity foundation §8, 2026-09-27).
+# dj_graphics_profiles.apply_profile() stores Profile.react_floor on /project1
+# under this key (GLITCH: 0.05 -- hits punch from near-black). Absent/None =
+# REACT_FLOOR above, so UV_RAVE and every other shipped look are unchanged.
+REACT_FLOOR_STORAGE_KEY = "react_floor"
 
 # Onset detection
 ONSET_THRESHOLD = 0.00005  # min bass energy jump to trigger
@@ -150,6 +155,20 @@ _pad_env = 0.0  # KeyLab pad-hit envelope (active control)
 _bass_peak = REACT_PEAK_FLOOR  # adaptive auto-gain running peaks
 _mid_peak = REACT_PEAK_FLOOR
 _high_peak = REACT_PEAK_FLOOR
+
+
+def _react_floor():
+    """Return the active flame floor: the profile override if set and sane, else REACT_FLOOR."""
+    try:
+        v = me.parent().fetch(REACT_FLOOR_STORAGE_KEY, None, search=False)
+        if v is None:
+            return REACT_FLOOR
+        v = float(v)
+        if 0.0 <= v <= REACT_CAP:
+            return v
+    except Exception:
+        pass
+    return REACT_FLOOR
 
 
 def _band_energy(spectrum_chop, lo, hi):
@@ -649,7 +668,8 @@ def onFrameStart(frame):
     bg = b ** REACT_GAMMA
     mg = m ** REACT_GAMMA
     hg = h ** REACT_GAMMA
-    flame_intensity = max(REACT_FLOOR, _safe(bg * 2.0 * REACT_GAIN, 0.0, REACT_CAP, REACT_FLOOR))
+    floor = _react_floor()
+    flame_intensity = max(floor, _safe(bg * 2.0 * REACT_GAIN, 0.0, REACT_CAP, floor))
     turbulence = _safe(mg * 1.2, 0.0, 1.0, 0.05)
     distortion = _safe(mg * 0.6, 0.0, 0.5, 0.02)
     sparkle = _safe(hg * 1.2, 0.0, 1.0, 0.0)

@@ -483,6 +483,29 @@ def _apply_profile_for_this_toe():
     _report["graphics_profile"] = profile
 
 
+# --- Command bridge: install the in-TD agent execution channel (2026-09-13) --
+# Loads td_command_bridge.py and installs its poller so an external agent can run
+# Python inside TD without the Textport/screen-control. Runs every launch so the
+# bridge is always present after the one-time bootstrap.
+def _install_command_bridge():
+    path = (
+        "/Users/thomasadair/projects/touchdesigner-dj-suite"
+        "/touchdesigner/scripts/td_command_bridge.py"
+    )
+    try:
+        g = dict(globals())  # inherit op/me/etc.
+        with open(path) as f:
+            exec(f.read(), g)
+        dat = g["install"]()
+        _log(
+            "command_bridge",
+            "OK" if dat is not None else "FAILED",
+            "poller on .bridge/ request-response",
+        )
+    except Exception as e:
+        _log("command_bridge", "ERROR", e)
+
+
 # --- Runner -----------------------------------------------------------------
 def _run():
     if _already_ran():
@@ -498,6 +521,7 @@ def _run():
         ("graphics_profile", _apply_profile_for_this_toe),
         ("audio_guard", _install_audio_guard),
         ("mask_reader", _report_mask_reader),
+        ("command_bridge", _install_command_bridge),
     ):
         try:
             fn()

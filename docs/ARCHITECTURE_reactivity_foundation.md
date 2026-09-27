@@ -1,6 +1,6 @@
 # Architecture & Fixed Method — Reactivity Foundation + Profile System
 
-Status: **DESIGN — for Thomas's approval. Nothing built yet.**
+Status: **§8 first slice BUILT on `feat/reactivity-foundation-s8` (2026-09-27), staged — not yet applied to the rig.** See `docs/ENGINEERING_LOG.md` and `docs/reactivity_s8_rig_runbook.md`. §2.2's `energy_slow`/`fx_master` and release-knob items are as designed; deviations are logged in ENGINEERING_LOG.
 Author: Cowork session, 2026-09-27. Grounded in the repo as it stands, not greenfield.
 Scope: the four things asked for — a shared foundation + reactivity engine, a profile contract, TouchOSC live control, and a repeatable "add profile N+1" method.
 
