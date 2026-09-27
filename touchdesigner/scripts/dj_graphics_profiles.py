@@ -222,6 +222,30 @@ class Profile:
         mode: ``"cycle"`` alternates the fire/lightning switch, ``"fire"`` or
             ``"lightning"`` locks it to one.
         mode_dwell_s: Seconds per mode when ``mode == "cycle"``.
+        inertia: ``"low"`` | ``"medium"`` | ``"high"``. A declaration of how much
+            the look should lag the music. It does not itself change any
+            expression; it documents intent and lets the fixed method and the
+            validator reason about a profile ("a high-inertia liquid look binding
+            the discrete gates is a contradiction"). Defaults to ``"medium"``,
+            which is what every shipped look is.
+        kick_gate_gain: Extra kick-flash AND outline brightness driven by the
+            discrete ``fx_react['kick_gate']`` pulse (near-1-frame release), on
+            top of the smoothed kick envelope. 0 (default) emits no gate term at
+            all, so the expression is byte-identical to the pre-bus rig. > 0 is
+            what makes a low-inertia look strobe on the actual hit.
+        snare_gate_gain: Extra glow driven by the discrete
+            ``fx_react['snare_gate']`` pulse. 0 (default) = no term.
+        energy_fast_gain: When > 0, the trail-length energy term rides the ~1 s
+            ``fx_react['energy_fast']`` instead of the 30 s fx_master, so trails
+            breathe with the bar rather than the section. 0 (default) keeps the
+            shipped slow-energy behaviour.
+        drama_gate_gain: Extra kick-flash gated by ``fx_react['drama']`` (a 0/1
+            energy-threshold channel), so a big flash only fires above an energy
+            floor. 0 (default) = no term.
+        needs_react_bus: Set True for a profile whose expressions reference
+            fx_react channels. Documents the dependency the way ``attractor``
+            documents the attractor-pipeline dependency; applying it without the
+            bus is not an error, it just renders inert gate terms.
         attractor: An ``attractor_engine.AttractorSpec``, or None for the five
             original silhouette looks. A profile that carries one renders a
             strange-attractor point cloud INTO the same fx_ chain, upstream of
@@ -253,6 +277,12 @@ class Profile:
         mode: str = "cycle",
         mode_dwell_s: float = 30.0,
         attractor: Optional["ae.AttractorSpec"] = None,
+        inertia: str = "medium",
+        kick_gate_gain: float = 0.0,
+        snare_gate_gain: float = 0.0,
+        energy_fast_gain: float = 0.0,
+        drama_gate_gain: float = 0.0,
+        needs_react_bus: bool = False,
     ) -> None:
         self.name = name
         self.description = description
@@ -274,6 +304,12 @@ class Profile:
         self.mode = str(mode)
         self.mode_dwell_s = float(mode_dwell_s)
         self.attractor = attractor
+        self.inertia = str(inertia)
+        self.kick_gate_gain = float(kick_gate_gain)
+        self.snare_gate_gain = float(snare_gate_gain)
+        self.energy_fast_gain = float(energy_fast_gain)
+        self.drama_gate_gain = float(drama_gate_gain)
+        self.needs_react_bus = bool(needs_react_bus)
 
     def __repr__(self) -> str:  # pragma: no cover - debug convenience
         return "<Profile %s: %s>" % (self.name, self.description)
@@ -383,9 +419,23 @@ def validate_profile(profile: Profile) -> List[str]:
         problems.append("palette_period_s must be > 0")
     for field in ("glow_kick_gain", "glow_snare_gain", "outline_kick_gain",
                   "zoom_kick_gain", "kick_flash_gain", "shake_snare_px",
-                  "snare_pop", "trail_energy_gain"):
+                  "snare_pop", "trail_energy_gain", "kick_gate_gain",
+                  "snare_gate_gain", "energy_fast_gain", "drama_gate_gain"):
         if getattr(profile, field) < 0.0:
             problems.append("%s must be >= 0" % field)
+
+    if profile.inertia not in ("low", "medium", "high"):
+        problems.append("inertia %r must be one of low/medium/high" % profile.inertia)
+    # A high-inertia look is defined by lagging the music; binding the discrete
+    # per-hit gates contradicts that. Caught here so the contradiction fails at
+    # review, not on stage. (Liquid can't be frenetic and shouldn't try.)
+    if profile.inertia == "high" and (
+        profile.kick_gate_gain > 0.0 or profile.snare_gate_gain > 0.0
+    ):
+        problems.append(
+            "inertia 'high' with a per-hit gate gain is a contradiction -- a "
+            "high-inertia look should not strobe on the beat"
+        )
 
     if profile.attractor is not None:
         problems += ["attractor: " + p for p in ae.validate_spec(profile.attractor)]
@@ -428,6 +478,15 @@ def audience_channels_for(profile: Profile) -> Tuple[str, ...]:
 KICK = "op('fx_kick_env')['bass']"
 SNARE = "op('fx_snare_env')['high']"
 ENERGY = "op('fx_master')['bass']"
+
+# fx_react bus channels (built by extend_dj_graphics.wire_react_bus). Only
+# profiles that opt in (via the *_gate_gain / energy_fast_gain fields) reference
+# these, so a profile that leaves those at 0 emits expressions byte-identical to
+# the pre-bus rig. See docs/ARCHITECTURE_reactivity_foundation.md.
+KICK_GATE = "op('fx_react')['kick_gate']"    # discrete per-hit kick pulse
+SNARE_GATE = "op('fx_react')['snare_gate']"  # discrete per-hit snare pulse
+ENERGY_FAST = "op('fx_react')['energy_fast']"  # ~1 s energy (not the 30 s DC one)
+DRAMA = "op('fx_react')['drama']"            # 0/1 energy-threshold gate
 
 
 def aud(channel: str) -> str:
@@ -564,6 +623,12 @@ def glow_size_expr(profile: Profile, audience: bool = False) -> str:
     kick_gain = min(profile.glow_kick_gain, headroom)
     snare_gain = min(profile.glow_snare_gain, headroom)
     drive = "%s*%g + %s*%g" % (KICK, kick_gain, SNARE, snare_gain)
+    # Discrete per-hit glow pop for low-inertia looks, summed INSIDE the same
+    # min(..., headroom) clamp so it can never exceed GLOW_SIZE_HARD_CAP. Guard
+    # keeps the string byte-identical for every profile that leaves this 0.
+    if profile.snare_gate_gain > 0.0:
+        gate_gain = min(profile.snare_gate_gain, headroom)
+        drive += " + %s*%g" % (SNARE_GATE, gate_gain)
     if not audience:
         return "%g + min(%s, %g)" % (GLOW_SIZE_BASE, drive, headroom)
     return "%g + min(max(%s + %s, 0), %g)" % (
@@ -580,7 +645,12 @@ def outline_bright_expr(profile: Profile) -> str:
     Returns:
         A TD parameter expression string.
     """
-    return "%g + %s * %g" % (profile.outline_base_bright, KICK, profile.outline_kick_gain)
+    expr = "%g + %s * %g" % (profile.outline_base_bright, KICK, profile.outline_kick_gain)
+    # Low-inertia looks add a discrete per-hit snap on top of the smoothed kick.
+    # Guard keeps the string byte-identical for every profile that leaves this 0.
+    if profile.kick_gate_gain > 0.0:
+        expr += " + %s * %g" % (KICK_GATE, profile.kick_gate_gain)
+    return expr
 
 
 def kick_flash_expr(profile: Profile, audience: bool = False) -> str:
@@ -599,12 +669,24 @@ def kick_flash_expr(profile: Profile, audience: bool = False) -> str:
     Returns:
         A TD parameter expression string.
     """
+    # Discrete gate + drama terms for low-inertia looks. Empty for every profile
+    # that leaves both gains 0, so the shipped expression is byte-identical.
+    extra = ""
+    if profile.kick_gate_gain > 0.0:
+        extra += " + %s * %g" % (KICK_GATE, profile.kick_gate_gain)
+    if profile.drama_gate_gain > 0.0:
+        extra += " + %s * %g" % (DRAMA, profile.drama_gate_gain)
     if not audience:
-        return "1 + %s * %g" % (KICK, profile.kick_flash_gain)
-    return "min(1 + %s * %g + max(0, %s) + %s + %s, %g)" % (
+        base = "1 + %s * %g" % (KICK, profile.kick_flash_gain)
+        if not extra:
+            return base
+        # A gated flash gets the same hard cap the audience path uses, so the
+        # discrete pulses can punch but never run the flash away.
+        return "min(%s%s, %g)" % (base, extra, KICK_FLASH_HARD_CAP)
+    return "min(1 + %s * %g + max(0, %s) + %s + %s%s, %g)" % (
         KICK, profile.kick_flash_gain,
         aud_term("gain_flash", AUDIENCE_FLASH_SPAN),
-        strobe_term_expr(), whiteout_term_expr(), KICK_FLASH_HARD_CAP,
+        strobe_term_expr(), whiteout_term_expr(), extra, KICK_FLASH_HARD_CAP,
     )
 
 
@@ -685,6 +767,12 @@ def trail_valuemult_expr(profile: Profile, with_energy: bool = True,
     terms = "%g - op('fx_lfo_decay')['chan1'] * 0.03" % base
     if with_energy and profile.trail_energy_gain > 0.0:
         terms += " + (%s - 1.0) * %g" % (ENERGY, profile.trail_energy_gain)
+    # Fast-energy trail term: rides the ~1 s fx_master_fast (centred at 0.5)
+    # instead of the 30 s DC energy, so trails breathe with the bar. Summed
+    # INSIDE the min(..., cap) below, so it cannot cross the runaway line. Guard
+    # keeps the string byte-identical for every profile that leaves this 0.
+    if profile.energy_fast_gain > 0.0:
+        terms += " + (%s - 0.5) * %g" % (ENERGY_FAST, profile.energy_fast_gain)
     if not audience:
         return "min(%s, %g)" % (terms, TRAIL_VALUEMULT_HARD_CAP)
     terms += " + %s" % aud_term("trail_bias", AUDIENCE_TRAIL_SPAN)
@@ -1036,6 +1124,39 @@ register(Profile(
     trail_energy_gain=0.05,
     mode="cycle",
     mode_dwell_s=45.0,
+))
+
+register(Profile(
+    name="GLITCH",
+    description="Frenetic/low-inertia. Strobes on the amen break: discrete gates, "
+                "short trails, drama-gated flash. Needs the fx_react bus.",
+    palette=[ACID, MAGENTA, CYAN, WHITE_HOT],
+    fire_tint=(0.6, 1.0, 0.1),
+    palette_period_s=6.0,
+    kick_advances_palette=True,
+    snare_pop=3.0,
+    mono_saturation=0.05,
+    # Low outline floor so a hit punches up from near-dark instead of from a
+    # permanent glow -- the profile-side half of the "make it frenetic" fix.
+    outline_base_bright=1.5,
+    outline_kick_gain=6.0,
+    glow_kick_gain=30.0,
+    glow_snare_gain=8.0,
+    zoom_kick_gain=0.30,
+    kick_flash_gain=6.0,
+    shake_snare_px=12.0,
+    # Short trails clear fast and re-arm -- the opposite of the liquid look.
+    trail_persistence=0.62,
+    trail_energy_gain=0.0,
+    mode="cycle",
+    mode_dwell_s=4.0,
+    inertia="low",
+    # The frenetic character: discrete per-hit gates, not smoothed envelopes.
+    kick_gate_gain=6.0,     # per-hit flash + outline snap
+    snare_gate_gain=18.0,   # per-hit glow pop
+    drama_gate_gain=4.0,    # extra flash only above the energy floor (the drop)
+    energy_fast_gain=0.0,   # trails stay short; freneticism comes from the gates
+    needs_react_bus=True,
 ))
 
 # -----------------------------------------------------------------------------

@@ -88,24 +88,56 @@ MID_BINS = (200, 2000)  # 200 Hz–2 kHz
 HIGH_BINS = (2000, 20000)  # 2–20 kHz
 
 # Per-band exponential smoothing (0=none, 0.99=very smooth)
-BASS_SMOOTH_COEF = 0.85
-MID_SMOOTH_COEF = 0.80
-HIGH_SMOOTH_COEF = 0.75
+# 2026-09-14: dropped hard (was 0.85 → 0.50 → now 0.25) for an ERRATIC, snappy
+# response that jumps with the track instead of gliding.
+BASS_SMOOTH_COEF = 0.25
+MID_SMOOTH_COEF = 0.25
+HIGH_SMOOTH_COEF = 0.20
+
+# ---- Adaptive auto-gain reactivity (2026-09-14) ----
+# The 1824c feed is very low-level (bass rest ~5e-5, kicks ~0.03-0.27), so fixed
+# multipliers leave it dim between hits. Instead, normalize each band to its own
+# slowly-decaying running PEAK so the look uses the full 0-1 range regardless of
+# absolute level; a noise gate stops it amplifying silence into flicker; a
+# gamma<1 curve makes it hotter; REACT_GAIN pushes peaks into the shader's 2.0
+# clamp. All live-tunable — reload the compositor to apply.
+REACT_NOISE_FLOOR = 3e-4    # raw band energy below this = treated as silence
+REACT_PEAK_DECAY = 0.9985   # running-peak decay per frame (~tens of seconds)
+REACT_PEAK_FLOOR = 1e-3     # smallest peak we divide by (guards quiet input)
+REACT_GAMMA = 0.55          # <1 = hotter / more sensitive; 1.0 = linear
+REACT_GAIN = 1.7            # final gain into flame
+# The color engine is fx_palette_apply = MULTIPLY(flame, palette). If flame hits
+# 0 the whole look goes black (starves the palette/trails). So the flame base
+# never fully drops (FLOOR keeps the palette painting a constant colored outline
+# + trails) and never blows white-hot (CAP keeps the live edge palette-COLORED,
+# not white). Reactivity rides between floor and cap.
+REACT_FLOOR = 0.30          # min flame base — constant colored look, never black
+REACT_CAP = 1.0             # max flame base — below white-hot (kills white edge)
 
 # Onset detection
 ONSET_THRESHOLD = 0.00005  # min bass energy jump to trigger
 ONSET_COOLDOWN_MS = 120  # ms minimum between triggers
 ONSET_DECAY_RATE = 0.92  # burst decay per frame
 
-# Visual multipliers — calibrated 2026-04-23 against DDJ-SX2 noise floor
-# noise_bass≈0.00081, noise_high≈0.0063.
-# At noise floor: flame≈0.16 (dim), sparkle≈0.05 (barely visible)
-# At full kick: bass ~10x noise → flame ≈ 1.6 (clamped to 1 in shader)
-FLAME_INTENSITY_MULT = 200.0
-TURBULENCE_MULT = 150.0
-DISTORTION_MULT = 150.0
-SPARKLE_MULT = 8.0
-BLOOM_MULT = 25.0
+# Visual multipliers — 2026-09-13 re-tune for the 1824c signal path.
+# The old values were calibrated against the DDJ noise floor (~0.0008). The
+# 1824c line runs hotter/lower depending on Serato master gain; live reading
+# was ~0.0002 max bin, so the look barely lifted off its rest floor. Raised ~3x
+# so a kick reads strongly without pinning (flame clamps at 2.0 in _safe()).
+# If it now looks blown out, halve these; if still weak, double them.
+FLAME_INTENSITY_MULT = 650.0
+TURBULENCE_MULT = 450.0
+DISTORTION_MULT = 450.0
+SPARKLE_MULT = 28.0
+BLOOM_MULT = 60.0
+
+# ---- ACTIVE CONTROL (KeyLab pads) 2026-09-14 ----
+# Pads arrive on MIDI channel 10 (notes 37-44), velocity-sensitive, via the
+# `perf_midi` MIDI In CHOP. A pad hit punches the flame; harder hit = bigger
+# punch. PAD_DECAY is the per-frame tail (0.90 ~= half a second at 60fps);
+# PAD_FLAME_GAIN is how hard a full-velocity hit drives the flame (clamped to 2).
+PAD_DECAY = 0.90
+PAD_FLAME_GAIN = 1.6
 
 # Mutable audio state (updated every frame)
 _smooth_bass = 0.0
@@ -114,6 +146,10 @@ _smooth_high = 0.0
 _prev_bass = 0.0
 _burst_decay = 0.0
 _last_onset_frame = -999
+_pad_env = 0.0  # KeyLab pad-hit envelope (active control)
+_bass_peak = REACT_PEAK_FLOOR  # adaptive auto-gain running peaks
+_mid_peak = REACT_PEAK_FLOOR
+_high_peak = REACT_PEAK_FLOOR
 
 
 def _band_energy(spectrum_chop, lo, hi):
@@ -525,7 +561,8 @@ def onFrameStart(frame):
     No longer depends on audio_params or audio_reactive_mapper."""
 
     global _smooth_bass, _smooth_mid, _smooth_high, _prev_bass
-    global _burst_decay, _last_onset_frame
+    global _burst_decay, _last_onset_frame, _pad_env
+    global _bass_peak, _mid_peak, _high_peak
 
     # One-shot audio chain setup (fires once per session)
     if not _AUDIO_BOOTSTRAP_DONE:
@@ -538,6 +575,19 @@ def onFrameStart(frame):
     # One-shot: wire the GLSL uniform name mapping on fire_aura_glsl.
     if not _UNIFORMS_WIRED:
         _wire_glsl_uniforms_once()
+
+    # Per-frame: force the mask reader to re-read the live shared-memory frame.
+    # body_mask_top is a SOURCE Script TOP (no TOP input), so TD marks it clean
+    # and serves a cached frame -- the mask renders but is FROZEN. Force-cooking
+    # it here (onFrameStart runs every frame) makes it re-read the tracker's
+    # current frame each cook. The reader does a 300 KB fresh read, so this is
+    # cheap. (2026-09-13 desk fix -- pairs with the fresh-read reader change.)
+    _bm = op("body_mask_top")
+    if _bm is not None:
+        try:
+            _bm.cook(force=True)
+        except Exception:
+            pass
 
     # One-shot render-pipeline diagnostic (fires once per reload)
     if not _RENDER_DIAG_DONE:
@@ -558,14 +608,18 @@ def onFrameStart(frame):
         mid_raw = _band_energy(asp, *MID_BINS)
         high_raw = _band_energy(asp, *HIGH_BINS)
 
-        # Exponential smoothing
-        _smooth_bass = _smooth_bass * BASS_SMOOTH_COEF + bass_raw * (
-            1.0 - BASS_SMOOTH_COEF
-        )
-        _smooth_mid = _smooth_mid * MID_SMOOTH_COEF + mid_raw * (1.0 - MID_SMOOTH_COEF)
-        _smooth_high = _smooth_high * HIGH_SMOOTH_COEF + high_raw * (
-            1.0 - HIGH_SMOOTH_COEF
-        )
+        # Adaptive auto-gain per band: track a slowly-decaying running peak,
+        # normalize the raw energy to it (full 0-1 range from a weak signal),
+        # gate out silence, then smooth the NORMALIZED value (low coef = erratic).
+        _bass_peak = max(bass_raw, _bass_peak * REACT_PEAK_DECAY, REACT_PEAK_FLOOR)
+        _mid_peak = max(mid_raw, _mid_peak * REACT_PEAK_DECAY, REACT_PEAK_FLOOR)
+        _high_peak = max(high_raw, _high_peak * REACT_PEAK_DECAY, REACT_PEAK_FLOOR)
+        bass_n = 0.0 if bass_raw < REACT_NOISE_FLOOR else min(bass_raw / _bass_peak, 1.0)
+        mid_n = 0.0 if mid_raw < REACT_NOISE_FLOOR else min(mid_raw / _mid_peak, 1.0)
+        high_n = 0.0 if high_raw < REACT_NOISE_FLOOR else min(high_raw / _high_peak, 1.0)
+        _smooth_bass = _smooth_bass * BASS_SMOOTH_COEF + bass_n * (1.0 - BASS_SMOOTH_COEF)
+        _smooth_mid = _smooth_mid * MID_SMOOTH_COEF + mid_n * (1.0 - MID_SMOOTH_COEF)
+        _smooth_high = _smooth_high * HIGH_SMOOTH_COEF + high_n * (1.0 - HIGH_SMOOTH_COEF)
 
         # Onset detection (bass transient)
         bass_delta = bass_raw - _prev_bass
@@ -590,15 +644,43 @@ def onFrameStart(frame):
     m = _smooth_mid
     h = _smooth_high
 
-    flame_intensity = _safe(b * FLAME_INTENSITY_MULT, 0.0, 2.0, 0.05)
-    turbulence = _safe(m * TURBULENCE_MULT, 0.0, 1.0, 0.1)
-    distortion = _safe(m * DISTORTION_MULT, 0.0, 0.5, 0.05)
-    sparkle = _safe(h * SPARKLE_MULT, 0.0, 1.0, 0.0)
-    bloom_intensity = _safe(0.2 + h * BLOOM_MULT, 0.0, 3.0, 0.2)
+    # b/m/h are now adaptive-normalized 0-1. Gamma (<1) makes it hotter/erratic;
+    # REACT_GAIN pushes peaks toward the shader's 2.0 clamp.
+    bg = b ** REACT_GAMMA
+    mg = m ** REACT_GAMMA
+    hg = h ** REACT_GAMMA
+    flame_intensity = max(REACT_FLOOR, _safe(bg * 2.0 * REACT_GAIN, 0.0, REACT_CAP, REACT_FLOOR))
+    turbulence = _safe(mg * 1.2, 0.0, 1.0, 0.05)
+    distortion = _safe(mg * 0.6, 0.0, 0.5, 0.02)
+    sparkle = _safe(hg * 1.2, 0.0, 1.0, 0.0)
+    bloom_intensity = _safe(0.2 + hg * 1.5, 0.0, 3.0, 0.2)
     burst_decay = _safe(_burst_decay, 0.0, 1.0, 0.0)
-    bass_smooth = _safe(_smooth_bass, 0.0, 1.0, 0.0)
-    mid_smooth = _safe(_smooth_mid, 0.0, 1.0, 0.0)
-    high_smooth = _safe(_smooth_high, 0.0, 1.0, 0.0)
+    bass_smooth = _safe(b, 0.0, 1.0, 0.0)
+    mid_smooth = _safe(m, 0.0, 1.0, 0.0)
+    high_smooth = _safe(h, 0.0, 1.0, 0.0)
+
+    # ---- ACTIVE CONTROL: KeyLab pads punch the look (2026-09-14) ----
+    # Read the hardest currently-pressed pad (ch10 notes) from perf_midi, hold a
+    # fast-attack / slow-decay envelope, and MIX it into the flame + burst so a
+    # hit visibly bursts the graphic. This is your hands driving the visuals on
+    # top of the audio. Existence-guarded so it is a no-op if perf_midi is absent.
+    _pad_raw = 0.0
+    _pm = op("perf_midi")
+    if _pm is not None:
+        try:
+            for _ch in _pm.chans():
+                if _ch.name.startswith("ch10n"):  # pads = MIDI channel 10
+                    _v = float(_ch[0])
+                    if _v > _pad_raw:
+                        _pad_raw = _v
+            _pad_raw = _pad_raw / 127.0
+        except Exception:
+            _pad_raw = 0.0
+    _pad_env = max(_pad_raw, _pad_env * PAD_DECAY)
+    if _pad_env > 0.0001:
+        flame_intensity = _safe(flame_intensity + _pad_env * PAD_FLAME_GAIN, 0.0, 2.0)
+        sparkle = _safe(sparkle + _pad_env * 0.5, 0.0, 1.0)
+        burst_decay = max(burst_decay, _pad_env)
 
     # ---- Periodic audio diagnostic (every 2 seconds at 60fps) ----
     if frame % 120 == 0:

@@ -80,8 +80,43 @@ USE_GLSL_RGB_SPLIT = False    # False = transform jitter (bullet-proof, no compi
 LFO_HUE_HZ = 0.005            # very slow colour drift   (~200 s period)
 LFO_GLOW_HZ = 0.01            # glow baseline drift       (~100 s period)
 LFO_DECAY_HZ = 0.02           # trail-decay drift         (~50 s period)
-EVO_WINDOW_S = 30.0           # beat-density accumulator window
+EVO_WINDOW_S = 30.0           # beat-density accumulator window (SLOW energy)
 EVO_MIN, EVO_MAX = 0.6, 1.5   # master-intensity range the accumulator maps to
+
+# --- Reactivity foundation (fx_react bus + frenetic fixes) ------------
+# All of this is ADDITIVE: it creates new fx_* nodes and never rewires the
+# existing UV_RAVE chain, so the shipped look is byte-identical whether or not
+# the bus is built. teardown() removes every fx_ node, so it is fully reversible.
+BUILD_REACT_BUS = True        # False = skip the bus entirely (legacy behaviour)
+
+# Real-FFT bands. The legacy fx_audio_bands split the spectrum by CHANNEL index
+# (low 1/8, top 1/4), which is naming-agnostic but musically crude. The real-FFT
+# path reads audio_spectrum[0].vals BINS instead (kick = low bins ~0-130Hz,
+# snare/high = mid-high bins), promoted from the live-proven _cowork_freqbands.py
+# patch. Set False to fall back to the legacy channel-index split.
+USE_REAL_FFT_BANDS = True
+FFT_BASS_BINS = (0, 2)        # low bins  -> 'bass'  (kick)
+FFT_MID_BINS = (3, 12)        # mid bins  -> 'mid'
+FFT_HIGH_BINS = (13, 40)      # mid-high bins -> 'high' (snare/hats)
+
+# FAST energy: the second energy accumulator. The existing fx_master rides a
+# 30 s Filter CHOP (EVO_WINDOW_S) -- effectively DC, correct for palette drift
+# and morph-on-a-drop, WRONG for anything that should feel frenetic. fx_master_fast
+# rides a ~1 s window so a profile can bind punchy energy that is not DC.
+EVO_FAST_WINDOW_S = 1.0       # fast energy accumulator window
+EVO_FAST_MIN, EVO_FAST_MAX = 0.0, 1.0
+
+# Discrete per-hit GATES. fx_kick_env/fx_snare_env keep their musical 150-200 ms
+# release (UV_RAVE et al. depend on it). The gates are SEPARATE Trigger CHOPs
+# with a near-1-frame release, so a low-inertia profile can strobe on the actual
+# hit and re-arm instantly instead of riding a 200 ms tail that blurs an amen
+# break. Existing profiles never read them, so nothing they do changes.
+GATE_RELEASE = 0.03           # s  (~1-2 frames at 60fps)
+GATE_ATTACK = 0.001           # s
+
+# DRAMA: a threshold gate on fast energy, published as a 0/1 channel so a profile
+# can fire big gestures only above an energy floor rather than continuously.
+DRAMA_THRESH = 0.55           # fast-energy level above which drama == 1.0
 
 # --- Palette rotation -------------------------------------------------
 PALETTE_PERIOD_S = 240.0      # swap every 4 minutes
@@ -222,32 +257,77 @@ def preflight():
 # audio bands — one Script CHOP that always emits 'bass' and 'high'
 # (index-based slicing == naming-agnostic, so it survives any spectrum layout)
 # ---------------------------------------------------------------------
-AUDIO_BANDS_CODE = '''# fx_audio_bands — emit averaged 'bass' and 'high' bands, naming-agnostic
+# Legacy: split the spectrum by CHANNEL index (naming-agnostic, musically crude).
+_AUDIO_BANDS_CODE_LEGACY = '''# fx_audio_bands — emit averaged 'bass'/'mid'/'high' bands, naming-agnostic
 def onCook(scriptOp):
     scriptOp.clear()
     src = op('%s')
-    bass = 0.0
-    high = 0.0
+    bass = mid = high = 0.0
     if src is not None and src.numChans > 0:
         n = src.numChans
-        lo = src.chans()[:max(1, n // 8)]          # low 1/8 of the spectrum
-        hi = src.chans()[max(1, (3 * n) // 4):]    # top 1/4 of the spectrum
+        lo = src.chans()[:max(1, n // 8)]              # low 1/8 of the spectrum
+        md = src.chans()[max(1, n // 8):max(2, n // 2)]  # middle band
+        hi = src.chans()[max(1, (3 * n) // 4):]        # top 1/4 of the spectrum
         if lo:
             bass = sum(c.eval() for c in lo) / len(lo)
+        if md:
+            mid = sum(c.eval() for c in md) / len(md)
         if hi:
             high = sum(c.eval() for c in hi) / len(hi)
     else:
         amp = op('%s')
         if amp is not None and amp.numChans > 0:
-            bass = high = amp[0].eval()
+            bass = mid = high = amp[0].eval()
     scriptOp.appendChan('bass').vals = [bass]
+    scriptOp.appendChan('mid').vals = [mid]
     scriptOp.appendChan('high').vals = [high]
     return
 ''' % (AUDIO_SPECTRUM, AUDIO_AMP)
 
+# Real-FFT: read audio_spectrum[0].vals BINS (kick=low bins, snare=mid/high bins).
+# Promoted from the live-proven _cowork_freqbands.py patch, extended with a mid
+# band so the fx_react bus can publish a real 'mid'. Reversible: set
+# USE_REAL_FFT_BANDS = False to restore the legacy channel-index split above.
+_AUDIO_BANDS_CODE_FFT = '''# fx_audio_bands — REAL frequency bins (kick=low bins, snare=mid/high bins)
+def onCook(scriptOp):
+    scriptOp.clear()
+    src = op('%s')
+    bass = mid = high = 0.0
+    if src is not None and src.numChans > 0 and src.numSamples > 0:
+        ch = src[0]
+        n = src.numSamples
+        try:
+            vals = ch.vals
+            def band(lo, hi):
+                lo = min(lo, n - 1); hi = min(hi, n - 1)
+                if hi < lo:
+                    return 0.0
+                return sum(abs(v) for v in vals[lo:hi + 1]) / max(1, hi - lo + 1)
+            bass = band(%d, %d)
+            mid = band(%d, %d)
+            high = band(%d, %d)
+        except Exception:
+            pass
+    else:
+        amp = op('%s')
+        if amp is not None and amp.numChans > 0:
+            bass = mid = high = amp[0].eval()
+    scriptOp.appendChan('bass').vals = [bass]
+    scriptOp.appendChan('mid').vals = [mid]
+    scriptOp.appendChan('high').vals = [high]
+    return
+''' % (AUDIO_SPECTRUM,
+       FFT_BASS_BINS[0], FFT_BASS_BINS[1],
+       FFT_MID_BINS[0], FFT_MID_BINS[1],
+       FFT_HIGH_BINS[0], FFT_HIGH_BINS[1],
+       AUDIO_AMP)
+
+AUDIO_BANDS_CODE = _AUDIO_BANDS_CODE_FFT if USE_REAL_FFT_BANDS else _AUDIO_BANDS_CODE_LEGACY
+
 
 def wire_audio_bands():
-    _log("--- audio bands ---")
+    _log("--- audio bands (%s) ---"
+         % ("real-FFT bins" if USE_REAL_FFT_BANDS else "legacy channel split"))
     cb = _op(textDAT, "fx_audio_bands_cb", 0, 0)
     cb.text = AUDIO_BANDS_CODE
     bands = _op(scriptCHOP, "fx_audio_bands", 1, 0)
@@ -287,6 +367,20 @@ def wire_evolution(bands):
     _first_par(master, ["torange2", "torangehigh"], EVO_MAX)
     _first_par(master, ["fromrange1", "fromrangelow"], 0.0)
     _first_par(master, ["fromrange2", "fromrangehigh"], 1.0)
+
+    # FAST energy accumulator (~1 s) — parallel to the 30 s one, never replaces it.
+    # This is the direct fix for "the attractor ENERGY term is DC": profiles that
+    # want punchy energy bind fx_master_fast instead of fx_master. Additive nodes.
+    energy_fast = _op(filterCHOP, "fx_energy_fast", 4, 1)
+    _wire(bands, energy_fast)
+    _first_par(energy_fast, ["width", "filterwidth"], EVO_FAST_WINDOW_S)
+    master_fast = _op(mathCHOP, "fx_master_fast", 5, 1)
+    _wire(energy_fast, master_fast)
+    _first_par(master_fast, ["chanscope"], "bass")
+    _first_par(master_fast, ["torange1", "torangelow"], EVO_FAST_MIN)
+    _first_par(master_fast, ["torange2", "torangehigh"], EVO_FAST_MAX)
+    _first_par(master_fast, ["fromrange1", "fromrangelow"], 0.0)
+    _first_par(master_fast, ["fromrange2", "fromrangehigh"], 1.0)
     return master
 
 
@@ -520,6 +614,94 @@ def _snare_jitter(src, env, master):
 
 
 # ---------------------------------------------------------------------
+# gates — discrete per-hit pulses (near-1-frame release), for low-inertia looks
+# ---------------------------------------------------------------------
+def wire_gates():
+    """Build fx_kick_gate / fx_snare_gate: Trigger CHOPs with a near-frame release.
+
+    These are SEPARATE from fx_kick_env / fx_snare_env, which keep their musical
+    150-200 ms release that UV_RAVE and the other shipped looks depend on. A gate
+    fires on the hit and re-arms immediately, so a frenetic profile can strobe
+    with the beat instead of riding a tail that blurs consecutive hits.
+    Requires fx_kick_sel / fx_snare_sel (built by wire_kick / wire_snare), so this
+    runs after them.
+    """
+    _log("--- gates (discrete per-hit) ---")
+    ksel = P.op("fx_kick_sel")
+    ssel = P.op("fx_snare_sel")
+    kg = _op(triggerCHOP, "fx_kick_gate", 6, 4)
+    if ksel is not None:
+        _wire(ksel, kg)
+    _first_par(kg, ["threshold", "triggerthreshold"], KICK_THRESH)
+    _first_par(kg, ["attack", "attacklength"], GATE_ATTACK)
+    _first_par(kg, ["release", "decay", "releaselength", "decayrate"], GATE_RELEASE)
+    sg = _op(triggerCHOP, "fx_snare_gate", 6, 5)
+    if ssel is not None:
+        _wire(ssel, sg)
+    _first_par(sg, ["threshold", "triggerthreshold"], SNARE_THRESH)
+    _first_par(sg, ["attack", "attacklength"], GATE_ATTACK)
+    _first_par(sg, ["release", "decay", "releaselength", "decayrate"], GATE_RELEASE)
+    return kg, sg
+
+
+# ---------------------------------------------------------------------
+# fx_react — the shared reactivity bus. One CHOP of named channels every
+# profile binds to, so a look never re-derives audio and the frenetic fixes
+# live in ONE place. Freeze-safe: a Script CHOP onCook (once per cook), the
+# same proven pattern as fx_audio_bands — NOT a CHOP Execute onValueChange.
+# ---------------------------------------------------------------------
+REACT_BUS_CODE = '''# fx_react — named reactivity channels for every profile to bind to.
+# Reads existing analysis ops; publishes a stable channel vocabulary. Any op that
+# is missing simply contributes 0.0, so the bus degrades gracefully.
+def onCook(scriptOp):
+    scriptOp.clear()
+    def chan(opname, cname):
+        o = op(opname)
+        if o is None:
+            return 0.0
+        try:
+            return float(o[cname].eval())
+        except Exception:
+            return 0.0
+    kick = chan('fx_kick_env', 'bass')
+    snare = chan('fx_snare_env', 'high')
+    kick_gate = chan('fx_kick_gate', 'bass')
+    snare_gate = chan('fx_snare_gate', 'high')
+    bass = chan('fx_audio_bands', 'bass')
+    mid = chan('fx_audio_bands', 'mid')
+    high = chan('fx_audio_bands', 'high')
+    energy_slow = chan('fx_master', 'bass')
+    energy_fast = chan('fx_master_fast', 'bass')
+    drama = 1.0 if energy_fast > %f else 0.0
+    out = {
+        'kick': kick, 'snare': snare,
+        'kick_gate': kick_gate, 'snare_gate': snare_gate,
+        'bass': bass, 'mid': mid, 'high': high,
+        'energy_slow': energy_slow, 'energy_fast': energy_fast,
+        'drama': drama,
+    }
+    for nm, v in out.items():
+        scriptOp.appendChan(nm).vals = [v]
+    return
+''' % DRAMA_THRESH
+
+
+def wire_react_bus():
+    """Build the fx_react Script CHOP: the named channel bus profiles bind to."""
+    _log("--- fx_react bus ---")
+    cb = _op(textDAT, "fx_react_cb", 7, 4)
+    cb.text = REACT_BUS_CODE
+    react = _op(scriptCHOP, "fx_react", 8, 4)
+    _setpar(react, "callbacks", cb)
+    try:
+        react.cook(force=True)
+        _log("  fx_react channels: " + " ".join(c.name for c in react.chans()))
+    except Exception as e:
+        _log("  fx_react cook warn: " + str(e))
+    return react
+
+
+# ---------------------------------------------------------------------
 # orchestration
 # ---------------------------------------------------------------------
 def build_effects():
@@ -541,6 +723,12 @@ def build_effects():
     stage = wire_trails(stage, master)
     stage = wire_kick(stage, bands, master)
     stage = wire_snare(stage, bands, master)
+
+    # Reactivity foundation: discrete gates + the shared fx_react bus. Additive —
+    # built after the sels/envs exist, reads them, and changes nothing upstream.
+    if BUILD_REACT_BUS:
+        wire_gates()
+        wire_react_bus()
 
     fx_out = _op(nullTOP, "fx_out", 15, 0)
     _wire(stage, fx_out, 0)
